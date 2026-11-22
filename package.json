@@ -1,5 +1,5 @@
 {
-  "name": "vmware",
+  "name": "claude-skill-vmware",
   "version": "0.1.0",
   "description": "Control VMware Workstation Pro VMs via vmrun/vmcli — no MCP server needed",
   "author": {
@@ -26,7 +26,7 @@
     "hypervisor"
   ],
   "bin": {
-    "vmware-skill": "skills/vmware/scripts/vmware.js"
+    "claude-skill-vmware": "skills/vmware/scripts/vmware.js"
   },
   "files": [
     "skills/vmware/SKILL.md",

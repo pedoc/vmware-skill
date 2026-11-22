@@ -27,8 +27,8 @@ npx skills add pedoc/claude-skills-vmware
 Or install just the CLI for scripting:
 
 ```bash
-npm install -g vmware
-vmware-skill vm list --power
+npm install -g claude-skill-vmware
+claude-skill-vmware vm list --power
 ```
 
 ## Requirements
