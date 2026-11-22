@@ -171,6 +171,77 @@ check('leaves forward slashes alone', () => {
   assertEqual(I.normVmx('K:/VMs/x.vmx'), 'K:/VMs/x.vmx');
 });
 
+process.stdout.write('environment variable names\n');
+check('REST credentials use the VMWARE_REST_* names', () => {
+  const saved = {
+    user: process.env.VMWARE_REST_USER,
+    pass: process.env.VMWARE_REST_PASSWORD,
+    oldUser: process.env.VMWARE_USERNAME,
+    oldPass: process.env.VMWARE_PASSWORD,
+  };
+  try {
+    delete process.env.VMWARE_USERNAME;
+    delete process.env.VMWARE_PASSWORD;
+    delete process.env.VMWARE_REST_USER;
+    delete process.env.VMWARE_REST_PASSWORD;
+
+    // The old generic names must not be read: they collide with unrelated
+    // tooling and are indistinguishable from the guest credentials.
+    process.env.VMWARE_USERNAME = 'old';
+    process.env.VMWARE_PASSWORD = 'old';
+    assertEqual(I.restCredentials(), null, 'old names must be ignored');
+
+    process.env.VMWARE_REST_USER = 'u';
+    process.env.VMWARE_REST_PASSWORD = 'p';
+    assertEqual(I.restCredentials(), { user: 'u', pass: 'p' });
+  } finally {
+    for (const [k, v] of [
+      ['VMWARE_REST_USER', saved.user],
+      ['VMWARE_REST_PASSWORD', saved.pass],
+      ['VMWARE_USERNAME', saved.oldUser],
+      ['VMWARE_PASSWORD', saved.oldPass],
+    ]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+check('REST user without a password still counts as configured', () => {
+  const saved = {
+    user: process.env.VMWARE_REST_USER,
+    pass: process.env.VMWARE_REST_PASSWORD,
+  };
+  try {
+    process.env.VMWARE_REST_USER = 'u';
+    delete process.env.VMWARE_REST_PASSWORD;
+    assertEqual(I.restCredentials(), { user: 'u', pass: '' });
+  } finally {
+    for (const [k, v] of [
+      ['VMWARE_REST_USER', saved.user],
+      ['VMWARE_REST_PASSWORD', saved.pass],
+    ]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+check('REST host/port are namespaced and default sanely', () => {
+  const saved = { h: process.env.VMWARE_REST_HOST, p: process.env.VMWARE_REST_PORT };
+  try {
+    delete process.env.VMWARE_REST_HOST;
+    delete process.env.VMWARE_REST_PORT;
+    assertEqual(I.restBase(), 'http://127.0.0.1:8697/api');
+    process.env.VMWARE_REST_HOST = '10.0.0.5';
+    process.env.VMWARE_REST_PORT = '9999';
+    assertEqual(I.restBase(), 'http://10.0.0.5:9999/api');
+  } finally {
+    for (const [k, v] of [['VMWARE_REST_HOST', saved.h], ['VMWARE_REST_PORT', saved.p]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 process.stdout.write('guest env parsing\n');
 check('splits KEY=VALUE pairs on boundaries, not plain whitespace', () => {
   const parsed = I.parseGuestEnv(

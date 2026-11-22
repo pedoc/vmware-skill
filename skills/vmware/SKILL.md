@@ -157,10 +157,21 @@ node scripts/vmware.js guest ready "Win10" --timeout 300
 之后设好环境变量即可：
 
 ```sh
-export VMWARE_USERNAME=...
-export VMWARE_PASSWORD=...
+export VMWARE_REST_USER=...
+export VMWARE_REST_PASSWORD=...
 node scripts/vmware.js rest status          # 确认可达
 ```
+
+**两类凭据的变量名不要混**：
+
+| 变量 | 用途 |
+|---|---|
+| `VMWARE_GUEST_USER` / `VMWARE_GUEST_PASS` | 客户机 OS 的登录账号（`guest` 分组） |
+| `VMWARE_REST_USER` / `VMWARE_REST_PASSWORD` | vmrest 的 HTTP Basic 认证（`rest` 分组） |
+| `VMWARE_REST_HOST` / `VMWARE_REST_PORT` | vmrest 地址，默认 `127.0.0.1:8697` |
+
+不读 `VMWARE_USERNAME` / `VMWARE_PASSWORD` 这类泛名——它们既容易和别的工具撞，
+也看不出指的是客户机还是 REST。
 
 REST 用自己的 VM id（哈希串），但 `rest` 子命令**接受 VM 名字**，会自动映射。
 

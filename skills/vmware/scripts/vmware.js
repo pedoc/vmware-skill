@@ -533,10 +533,23 @@ function vmcliGuest(vmx, module, command, args) {
 
 /* --------------------------------------------------------------- REST API */
 
+/*
+ * Credentials come in two flavours and the names keep them apart:
+ *   VMWARE_GUEST_USER / VMWARE_GUEST_PASS  — login inside the guest OS
+ *   VMWARE_REST_USER / VMWARE_REST_PASSWORD — vmrest's HTTP basic auth
+ * A bare VMWARE_PASSWORD would be indistinguishable from the guest one and
+ * collides with unrelated tooling, so it is deliberately not read.
+ */
 function restBase() {
-  const host = process.env.VMWARE_HOST || '127.0.0.1';
-  const port = process.env.VMWARE_PORT || '8697';
+  const host = process.env.VMWARE_REST_HOST || '127.0.0.1';
+  const port = process.env.VMWARE_REST_PORT || '8697';
   return 'http://' + host + ':' + port + '/api';
+}
+
+function restCredentials() {
+  const user = process.env.VMWARE_REST_USER;
+  if (!user) return null;
+  return { user: user, pass: process.env.VMWARE_REST_PASSWORD || '' };
 }
 
 function restAvailable() {
@@ -559,7 +572,10 @@ const http=require('http');const https=require('https');
 const url=process.argv[1], method=process.argv[2], body=process.argv[3]||null;
 const u=new URL(url);
 const mod=u.protocol==='https:'?https:http;
-const auth=process.env.VMWARE_USERNAME?Buffer.from(process.env.VMWARE_USERNAME+':'+(process.env.VMWARE_PASSWORD||'')).toString('base64'):null;
+// Read from the environment rather than argv so the credential never shows
+// up in a process listing.
+const ru=process.env.VMWARE_REST_USER, rp=process.env.VMWARE_REST_PASSWORD||'';
+const auth=ru?Buffer.from(ru+':'+rp).toString('base64'):null;
 const headers={};
 if(body){headers['Content-Type']='application/json';}
 if(auth){headers['Authorization']='Basic '+auth;}
@@ -1736,7 +1752,8 @@ function cmdRest(args) {
       reachable: ok,
       baseUrl: restBase(),
       vmrestPath: findTool('vmrest'),
-      credentialsConfigured: !!(process.env.VMWARE_USERNAME && process.env.VMWARE_PASSWORD),
+      credentialsConfigured: !!restCredentials(),
+      credentialSource: 'VMWARE_REST_USER / VMWARE_REST_PASSWORD',
     }, null, 2));
     return;
   }
@@ -1928,6 +1945,8 @@ module.exports = {
   osFamilyOf: osFamilyOf,
   splitArgs: splitArgs,
   parseGuestEnv: parseGuestEnv,
+  restCredentials: restCredentials,
+  restBase: restBase,
   HELP: HELP,
   get cliTimeoutMs() { return cliTimeoutMs; },
   resetCliTimeout: function () { cliTimeoutMs = null; },

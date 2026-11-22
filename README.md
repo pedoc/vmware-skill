@@ -170,10 +170,21 @@ need the REST API. It's optional; everything else works without it.
 "C:/Program Files/VMware/VMware Workstation/vmrest.exe" -C    # one-time credential setup
 "C:/Program Files/VMware/VMware Workstation/vmrest.exe"       # run the service
 
-export VMWARE_USERNAME=...
-export VMWARE_PASSWORD=...
+export VMWARE_REST_USER=...
+export VMWARE_REST_PASSWORD=...
 node scripts/vmware.js rest status
 ```
+
+Two kinds of credentials, deliberately named apart:
+
+| Variables | What they unlock |
+|---|---|
+| `VMWARE_GUEST_USER` / `VMWARE_GUEST_PASS` | login inside the guest OS (`guest` group) |
+| `VMWARE_REST_USER` / `VMWARE_REST_PASSWORD` | vmrest HTTP basic auth (`rest` group) |
+| `VMWARE_REST_HOST` / `VMWARE_REST_PORT` | vmrest address, default `127.0.0.1:8697` |
+
+Generic names like `VMWARE_USERNAME` / `VMWARE_PASSWORD` are **not** read: they collide
+with unrelated tooling and don't say whether they mean the guest or the REST API.
 
 `vmrest -C` is interactive: it asks for a username and a new password twice. Password rules:
 ≥8 characters, at least one lowercase letter, one digit, and one special character from
