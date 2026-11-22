@@ -102,6 +102,46 @@ check('rejects a missing value', () => {
   assert(threw, 'expected a parse error');
 });
 
+process.stdout.write('flag parsing\n');
+check('value flags consume the next token', () => {
+  const r = I.splitArgs(['vmnew', 'n', 'd', '--guest', '64']);
+  assertEqual(r.pos, ['vmnew', 'n', 'd']);
+  assertEqual(r.flags.guest, '64');
+});
+check('--flag=value still works', () => {
+  const r = I.splitArgs(['x', '--desc=a b']);
+  assertEqual(r.flags.desc, 'a b');
+});
+check('boolean flags stay boolean', () => {
+  const r = I.splitArgs(['--hard', '--nogui', 'vm']);
+  assertEqual(r.flags.hard, true);
+  assertEqual(r.flags.nogui, true);
+  assertEqual(r.pos, ['vm']);
+});
+check('boolean flag does not eat a following positional', () => {
+  const r = I.splitArgs(['power', 'stop', 'vm', '--hard']);
+  assertEqual(r.pos, ['power', 'stop', 'vm']);
+  assertEqual(r.flags.hard, true);
+});
+check('--memory is boolean when no number follows', () => {
+  const r = I.splitArgs(['snapshot', 'take', 'vm', 'name', '--memory']);
+  assertEqual(r.flags.memory, true);
+  assertEqual(r.pos, ['snapshot', 'take', 'vm', 'name']);
+});
+check('--memory takes a number when one follows', () => {
+  const r = I.splitArgs(['rest', 'vm-update', 'id', '--memory', '4096']);
+  assertEqual(r.flags.memory, '4096');
+  assertEqual(r.pos, ['rest', 'vm-update', 'id']);
+});
+check('value flag at end of args stays boolean', () => {
+  const r = I.splitArgs(['x', '--desc']);
+  assertEqual(r.flags.desc, true);
+});
+check('-- stops flag parsing', () => {
+  const r = I.splitArgs(['guest', 'exec', 'vm', '--', '--weird', 'arg']);
+  assertEqual(r.pos, ['guest', 'exec', 'vm', '--weird', 'arg']);
+});
+
 process.stdout.write('YAML subset parsing\n');
 check('parses nested maps', () => {
   const v = I.parseYaml('outer:\n  inner: 1\n  flag: true\n');

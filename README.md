@@ -213,6 +213,23 @@ These were verified against a live install, not inferred from docs:
     To change what the *next* boot uses, write the `.vmx` instead: `config set <vm> memsize <MB>`.
 11. **A wedged guest channel still reports `tools status: running`.** Use `guest ready`; if it
     never goes true, `power stop --hard` and start again.
+12. **Value-taking flags need `--flag value`, which the parser now honours.** Boolean flags are
+    listed in `VALUE_FLAGS`; `--memory` is boolean for `snapshot take` and numeric for
+    `rest vm-update`.
+13. **`Ethernet SetPresent` silently does nothing when the label isn't already in the `.vmx`**,
+    and still exits 0. `nic set-present` / `set-connected` write the config entry instead.
+14. **`vmcli Disk Create` only writes the `.vmdk`; it does not attach it.** Without a
+    `sataN:M.fileName` entry and a controller the VM's `disks` array stays empty. `disk create`
+    now attaches automatically; pass `--no-attach` for a bare file.
+15. **VMs created by `vmnew` / `snapshot clone` are not registered in `inventory.vmls`**, so
+    they can't be addressed by name until Workstation has opened them once. Use the `.vmx` path.
+16. **`snapshot clone` and `clone` need the destination directory to exist**, otherwise
+    `Could not find the file`.
+17. **`template deploy` accepts only `-p <template.vmtx>`** — there is no destination or name
+    option; the VM lands beside the template and inherits its name.
+18. **`net portforward-set/delete` can fail with `Failed to refresh NAT configuration`** even
+    though `vmnetnat.conf` was updated correctly. Plain `vmrun` fails the same way; restart
+    `VMware NAT Service` to clear it.
 
 ## Relationship to vmware-mcp
 

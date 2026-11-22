@@ -47,6 +47,29 @@ function decodeText(buf) {
   }
 }
 
+/**
+ * Flags that take a value. Everything else is boolean.
+ *
+ * Without this, `--guest 64` parsed as `guest: true` with `64` left as a
+ * positional argument, so every documented `<flag> <value>` form silently
+ * passed the literal string "true" to the CLI.
+ */
+const VALUE_FLAGS = new Set([
+  'guest', 'custom', 'desc', 'adapter', 'type', 'snapshot', 'name',
+  'dest', 'processors', 'flags',
+]);
+
+/**
+ * `--memory` is boolean for `snapshot take` (save RAM) and a value for
+ * `rest vm-update` (megabytes). Treat it as value-taking only when a plain
+ * number follows, which is unambiguous for both callers.
+ */
+const NUMERIC_VALUE_FLAGS = new Set(['memory']);
+
+function looksLikeNumber(v) {
+  return /^-?\d+$/.test(String(v || ''));
+}
+
 function splitArgs(args) {
   const flags = {};
   const pos = [];
@@ -59,8 +82,21 @@ function splitArgs(args) {
     if (a.startsWith('--')) {
       const body = a.slice(2);
       const eq = body.indexOf('=');
-      if (eq >= 0) flags[body.slice(0, eq)] = body.slice(eq + 1);
-      else flags[body] = true;
+      if (eq >= 0) {
+        flags[body.slice(0, eq)] = body.slice(eq + 1);
+        continue;
+      }
+      const next = args[i + 1];
+      const takesNext =
+        next !== undefined &&
+        !String(next).startsWith('--') &&
+        (VALUE_FLAGS.has(body) || (NUMERIC_VALUE_FLAGS.has(body) && looksLikeNumber(next)));
+      if (takesNext) {
+        flags[body] = next;
+        i++;
+      } else {
+        flags[body] = true;
+      }
     } else {
       pos.push(a);
     }
@@ -599,7 +635,7 @@ const HELP = {
       '   snapshot take <vm> <name> [--memory] [--desc "..."]\n' +
       '   snapshot revert <vm> <name|uid>\n' +
       '   snapshot delete <vm> <name|uid> [--children]\n' +
-      '   snapshot clone <vm> <name|uid> <dest.vmx> [--linked]',
+      '   snapshot clone <vm> <name|uid> <dest.vmx> [--linked] [--name <n>]',
   guest: 'guest ls <vm> <path> [--long]  list a directory (names; --long = raw detail table)\n' +
       '   guest mkdir <vm> <path>          create a directory\n' +
       '   guest rmdir <vm> <path>          delete a directory\n' +
@@ -654,7 +690,7 @@ const HELP = {
   vars: 'var read <vm> <runtimeConfig|guestEnv|guestVar> <name>\n' +
       '   var write <vm> <runtimeConfig|guestEnv|guestVar> <name> <value>',
   template: 'template create <vm> <out.vmtx> <name>\n' +
-      '   template deploy <template.vmtx> [--dest <dir>] [--name <n>]',
+      '   template deploy <template.vmtx>      (vmcli: -p only; VM created beside it)',
   clone: 'clone <vm> <dest.vmx> [--full|--linked] [--snapshot <name>] [--name <n>]',
   vmnew: 'vmnew <name> <dir> [--guest <id>] [--custom <guesttype>]   create a new VM\n' +
       '   guest ids: 1 Other, 3 Win3.11, 5 Win95, 6 Win98, 7 WinME, 8 NT Workstation,\n' +
@@ -818,7 +854,10 @@ function cmdSnapshot(args) {
       const uid = snapshotUid(vm, pos[2]);
       const dest = pos[3];
       if (!dest) fail('snapshot clone needs a destination .vmx path.');
-      const a = [uid, dest];
+      // vmcli takes a third positional: a short name for the new snapshot,
+      // which is also what names the resulting VM. Default it from the file.
+      const name = flags.name || path.basename(dest, path.extname(dest));
+      const a = [uid, dest, String(name)];
       if (flags.linked) a.push('-l');
       vmcli(vm.vmx, 'Snapshot', 'Clone', a);
       out('cloned snapshot uid ' + uid + ' -> ' + dest);
@@ -1328,6 +1367,53 @@ function cmdConfig(args) {
   }
 }
 
+/**
+ * Attach a freshly created .vmdk to the first free SATA slot.
+ *
+ * vmcli has no "add disk" command; the equivalent is writing the device's
+ * fileName + present entries into the .vmx (which vmcli does through
+ * ConfigParams SetEntry) and making sure the controller exists.
+ *
+ * @return the slot label, or null when nothing could be attached
+ */
+function attachDisk(vm, file) {
+  const vmx = vm.vmx;
+  let params;
+  try {
+    params = parseOrRaw(vmcli(vmx, 'ConfigParams', 'query'));
+  } catch (e) {
+    return null;
+  }
+  if (!params || typeof params !== 'object') return null;
+
+  // Controllers the VM already has, plus the first one that is absent.
+  const controllers = [];
+  for (const key of Object.keys(params)) {
+    const m = /^(sata|scsi|nvme|ide)(\d+)\.present$/i.exec(key);
+    if (m && /true|1/i.test(String(params[key]))) controllers.push(m[1].toLowerCase() + m[2]);
+  }
+  let controller = controllers[0];
+  if (!controller) {
+    controller = 'sata0';
+    vmcli(vmx, 'Sata', 'SetPresent', [controller, 'true']);
+    controllers.push(controller);
+  }
+
+  const used = new Set();
+  for (const key of Object.keys(params)) {
+    const m = /^sata(\d+):(\d+)\.present$/i.exec(key);
+    if (m && /true|1/i.test(String(params[key]))) used.add(Number(m[2]));
+  }
+  const controllerIndex = Number(controller.replace(/\D+/g, ''));
+  let slot = 0;
+  while (used.has(slot)) slot++;
+  const label = 'sata' + controllerIndex + ':' + slot;
+
+  vmcli(vmx, 'ConfigParams', 'SetEntry', [label + '.fileName', file]);
+  vmcli(vmx, 'Disk', 'SetPresent', [label, 'true']);
+  return label;
+}
+
 function cmdDisk(args) {
   const { flags, pos } = splitArgs(args);
   const sub = pos[0];
@@ -1344,7 +1430,14 @@ function cmdDisk(args) {
       if (!file || !size) fail('disk create needs <file.vmdk> and <size>.');
       const a = ['-f', file, '-s', size, '-a', String(flags.adapter || 'lsilogic'), '-t', String(flags.type || '0')];
       vmcli(vm.vmx, 'Disk', 'Create', a);
-      out('created disk ' + file + ' (' + size + ')');
+      // vmcli Disk Create only writes the .vmdk — the controller and the device
+      // entry have to be added separately or the disk never appears to the guest.
+      const attached = flags['no-attach'] ? null : attachDisk(vm, file);
+      if (attached) {
+        out('created disk ' + file + ' (' + size + ') attached as ' + attached);
+      } else {
+        out('created disk ' + file + ' (' + size + ') [not attached: --no-attach]');
+      }
       return;
     }
     case 'extend':
@@ -1354,6 +1447,11 @@ function cmdDisk(args) {
     default:
       fail('Unknown disk subcommand: ' + sub + '\n' + HELP.disk);
   }
+}
+
+/** Write a boolean config entry; vmcli wants the literal `true` / `false`. */
+function setVmxBool(vm, key, value) {
+  vmcli(vm.vmx, 'ConfigParams', 'SetEntry', [key, value ? 'true' : 'false']);
 }
 
 function cmdNic(args) {
@@ -1370,14 +1468,21 @@ function cmdNic(args) {
       vmcli(vm.vmx, 'Ethernet', 'SetConnectionType', [pos[2], pos[3]]);
       out('nic type set');
       return;
-    case 'set-present':
-      vmcli(vm.vmx, 'Ethernet', 'SetPresent', [pos[2], bool(pos[3]) ? 'true' : 'false']);
-      out('nic present set');
+    case 'set-present': {
+      // `Ethernet SetPresent <label> <bool>` silently does nothing when the
+      // device label is not already in the .vmx, and reports success anyway.
+      // The config entry is the only form that reliably creates the device.
+      if (!pos[2] || pos[3] === undefined) fail('nic set-present needs <label> <true|false>.');
+      setVmxBool(vm, pos[2] + '.present', bool(pos[3]));
+      out('nic present set: ' + pos[2] + ' = ' + (bool(pos[3]) ? 'true' : 'false'));
       return;
-    case 'set-connected':
-      vmcli(vm.vmx, 'Ethernet', 'SetStartConnected', [pos[2], bool(pos[3]) ? 'true' : 'false']);
-      out('nic startConnected set');
+    }
+    case 'set-connected': {
+      if (!pos[2] || pos[3] === undefined) fail('nic set-connected needs <label> <true|false>.');
+      setVmxBool(vm, pos[2] + '.startConnected', bool(pos[3]));
+      out('nic startConnected set: ' + pos[2] + ' = ' + (bool(pos[3]) ? 'true' : 'false'));
       return;
+    }
     case 'set-device':
       vmcli(vm.vmx, 'Ethernet', 'SetVirtualDevice', [pos[2], pos[3]]);
       out('nic virtual device set');
@@ -1524,11 +1629,18 @@ function cmdTemplate(args) {
       return;
     }
     case 'deploy': {
+      // vmcli's VMTemplate Deploy accepts exactly one option, -p <vmtx path>.
+      // There is no destination or name flag; the deployed VM lands next to the
+      // template and takes its name. Reject the old flags loudly rather than
+      // passing them through and getting "Invalid/unrecognized argument".
+      if (flags.dest || flags.name) {
+        fail('template deploy takes no --dest or --name: vmcli only supports -p <template.vmtx>.\n' +
+          'The VM is created alongside the template and named after it.\n' +
+          'Copy the template first if you need it in another directory.');
+      }
       const a = ['-p', pos[1]];
-      if (flags.dest) a.push('-d', String(flags.dest));
-      if (flags.name) a.push('-n', String(flags.name));
       vmcli(null, 'VMTemplate', 'Deploy', a);
-      out('template deployed');
+      out('template deployed: ' + pos[1]);
       return;
     }
     default:
@@ -1759,6 +1871,7 @@ module.exports = {
   resolveVm: resolveVm,
   guestJoin: guestJoin,
   osFamilyOf: osFamilyOf,
+  splitArgs: splitArgs,
   HELP: HELP,
   get cliTimeoutMs() { return cliTimeoutMs; },
   resetCliTimeout: function () { cliTimeoutMs = null; },

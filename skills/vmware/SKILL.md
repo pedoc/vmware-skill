@@ -175,6 +175,11 @@ REST 用自己的 VM id（哈希串），但 `rest` 子命令**接受 VM 名字*
 - 客户机操作超时是正常的（等 Tools 握手），失败会返回 VMware 原始错误。
 - **改 CPU/内存必须关机**：`chipset cpu|memory|cores` 走热插拔通道，开机的 VM 会直接报错。
   想为下次启动改配置用 `config set <vm> memsize <MB>`。
+- **`template deploy` 只接受 `-p <template.vmtx>`**：vmcli 没有目标目录与名字参数，
+  虚机就建在模板旁边、沿用模板名。要放别处先把模板拷过去。
+- **`snapshot clone` / `clone` 的目标目录必须已存在**，否则报 `Could not find the file`。
+- **`disk create` 默认会自动挂接**（写 `sataN:M.fileName` 并补控制器），
+  加 `--no-attach` 则只生成裸 vmdk 文件。
 
 ## 已知坑（照着 README 走会踩）
 
@@ -204,6 +209,15 @@ REST 用自己的 VM id（哈希串），但 `rest` 子命令**接受 VM 名字*
    Administrator 已交互登录时不要加这个 flag。
 12. **客户机通道卡死时，`tools status` 仍然报 running。** 判断能否操作要用 `guest ready`
    （会做一次真实往返），不要用 `tools status`。真卡死了只能 `power stop --hard` 再起来。
+13. **`Ethernet SetPresent` 在设备标签尚不存在时静默无效**，还返回成功。`nic set-present` /
+    `set-connected` 因此改写成 `ConfigParams SetEntry <label>.present <bool>`。
+14. **`vmcli Disk Create` 只写 vmdk 文件，不挂接**——不补 `sataN:M.fileName` 与控制器，
+    虚机里的 `disks` 始终是空数组，而命令照样返回成功。
+15. **`vmnew` / `snapshot clone` 建的虚机不写进 `inventory.vmls`**，按名字找不到。
+    用 `.vmx` 路径操作，或先在 Workstation 里打开一次。
+16. **`net portforward-set/delete` 可能报 `Failed to refresh NAT configuration`**，即使
+    `vmnetnat.conf` 已正确更新。原生 vmrun 一样失败（`VMware NAT Service` 需要重启），
+    不是本 skill 的问题。
 
 ## 深入
 
