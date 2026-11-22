@@ -1111,6 +1111,50 @@ function parseGuestEnv(text) {
   return result;
 }
 
+/**
+ * Run a script body through a chosen interpreter, without runScriptInGuest.
+ *
+ * The body is uploaded as a temp file and executed as a normal program. The
+ * returned text is what runProgramInGuest printed (usually nothing), not the
+ * script's own output — use `guest exec` when you need stdout back.
+ */
+function guestScriptFile(vm, interpreter, script, flags) {
+  const family = guestFamilyInfo(vm);
+  const stamp = process.pid + '-' + Date.now();
+  const ext = family.windows ? '.bat' : '.sh';
+  const remote = (family.windows ? 'C:\\Windows\\Temp' : '/tmp') + family.sep + 'vws-script-' + stamp + ext;
+  const hostTmp = path.join(os.tmpdir(), 'vws-script-' + stamp + ext);
+
+  const body = family.windows
+    ? '@echo off\r\n' + script + '\r\n'
+    : '#!/bin/sh\n' + script + '\n';
+
+  fs.writeFileSync(hostTmp, body, 'utf8');
+  guestCopyTo(vm, hostTmp, remote);
+  try { fs.unlinkSync(hostTmp); } catch (e) { /* ignore */ }
+
+  const a = [vm.vmx];
+  if (flags && flags['no-wait']) a.push('-noWait');
+  if (flags && flags['active-window']) a.push('-activeWindow');
+  if (flags && flags.interactive) a.push('-interactive');
+  if (family.windows) {
+    // A .bat/.cmd body can only be run by cmd, and launching cmd without /c
+    // opens an interactive shell that never returns. The interpreter argument
+    // is therefore ignored here; use guest exec with a powershell one-liner if
+    // you need another engine.
+    a.push('C:\\Windows\\System32\\cmd.exe', '/c ' + remote);
+  } else {
+    a.push(interpreter, remote);
+  }
+
+  try {
+    const r = vmrunGuest(['runProgramInGuest'].concat(a));
+    return r || 'OK';
+  } finally {
+    vmrunGuestRaw(['deleteFileInGuest', vm.vmx, remote]);
+  }
+}
+
 function cmdGuest(args) {
   const { flags, pos } = splitArgs(args);
   const sub = pos[0];
@@ -1249,13 +1293,17 @@ function cmdGuest(args) {
       return;
     }
     case 'script': {
-      const a = [vm.vmx];
-      if (flags['no-wait']) a.push('-noWait');
-      if (flags['active-window']) a.push('-activeWindow');
-      if (flags.interactive) a.push('-interactive');
-      a.push(pos[2], pos[3]);
-      const r = vmrunGuest(['runScriptInGuest'].concat(a));
-      out(r || 'OK');
+      // vmrun's runScriptInGuest hangs indefinitely against a Windows guest
+      // (verified: `runScriptInGuest <vmx> cmd.exe "echo hi"` never returns,
+      // and the `cmd.exe /c` form reports "A file was not found"). Ship the
+      // script as a file and run it with the requested interpreter instead —
+      // the same mechanism guest exec uses, which is reliable on both OSes.
+      const interpreter = pos[2];
+      const script = pos[3];
+      if (!interpreter || script === undefined) {
+        fail('guest script needs <interpreter> and <script content>.');
+      }
+      out(guestScriptFile(vm, interpreter, script, flags));
       return;
     }
     case 'ready': {

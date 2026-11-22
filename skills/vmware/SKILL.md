@@ -121,7 +121,13 @@ node scripts/vmware.js guest exec "Ubuntu 22 x64" "systemctl is-active nginx"   
 
 实现上会在客户机的 `C:\Windows\Temp`（Linux 为 `/tmp`）落一个临时脚本和日志，跑完删除。所以**命令里可以自由使用 `>` `|` `&&` 和引号**——它被当成脚本执行，不经过任何一层的引号重写。
 
-`guest run` / `guest script` 是 vmrun 的直通，**不返回输出**，只适合交互式程序或已经自己写日志的进程。
+`guest run` 是 vmrun 的直通，**不返回输出**，只适合交互式程序或已经自己写日志的进程。
+
+`guest script <vm> <interpreter> <script内容>` 把脚本体写成客户机内的临时文件再执行，
+**不经过 vmrun 的 `runScriptInGuest`**——后者在 Windows 客户机上会无限挂起
+（实测 `runScriptInGuest <vmx> cmd.exe "echo hi"` 永不返回，换成 `cmd.exe /c` 报
+`A file was not found`）。Windows 客户机上解释器参数会被忽略、统一用 `cmd.exe /c`
+执行 .bat，因为 .bat 只能由 cmd 运行。同样不返回脚本输出，要拿输出用 `guest exec`。
 
 **`exists` 是查询不是断言**：路径不存在打印 `false` 并正常退出 0，只有客户机本身不可用才报错。
 

@@ -123,8 +123,15 @@ node scripts/vmware.js guest exec "Ubuntu 22 x64" "systemctl is-active nginx"   
 The command is uploaded as a small script file and run from there, so `>`, `|`, `&&` and quoting
 all behave normally — nothing rewrites your command line.
 
-`guest run` / `guest script` are thin `vmrun` passthroughs that **do not capture output**; use
-them only for interactive programs or ones that log to a file themselves.
+`guest run` is a thin `vmrun` passthrough that **does not capture output**; use it only for
+interactive programs or ones that log to a file themselves.
+
+`guest script <vm> <interpreter> <body>` uploads the body as a temp file and executes it,
+deliberately **not** via `runScriptInGuest` — that call hangs forever against a Windows guest
+(verified: `runScriptInGuest <vmx> cmd.exe "echo hi"` never returns; the `cmd.exe /c` form
+reports `A file was not found`). On Windows the interpreter argument is ignored and the body
+runs as a `.bat` through `cmd.exe /c`. It does not return the script's output either — use
+`guest exec` for that.
 
 `guest exists` / `guest dir-exists` are queries, not assertions: an absent path prints `false`
 and exits 0.
