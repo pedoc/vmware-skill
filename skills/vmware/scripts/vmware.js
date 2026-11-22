@@ -1754,17 +1754,23 @@ function cmdScreen(args) {
   const sub = pos[0];
   const vm = vmArg(pos, 1);
   switch (sub) {
-    case 'capture':
+    case 'capture': {
+      if (!pos[2]) fail('screen capture needs an output <out.png>.');
+      // Anchor the path: vmcli resolves a relative one against its own cwd, so
+      // a relative name lands somewhere you will never look.
+      const dest = path.resolve(pos[2]).replace(/\\/g, '/');
       // vmcli MKS captureScreenshot works without guest credentials; vmrun's
       // captureScreen requires a guest login. Try vmcli first, fall back to vmrun.
-      try {
-        vmcli(vm.vmx, 'MKS', 'captureScreenshot', [pos[2]]);
-        out('screenshot saved: ' + pos[2]);
-      } catch (e) {
-        vmrun(['captureScreen', vm.vmx, pos[2]]);
-        out('screenshot saved: ' + pos[2]);
+      const r = run(vmcliPath(), [vm.vmx, 'MKS', 'captureScreenshot', dest]);
+      if (r.code !== 0) vmrun(['captureScreen', vm.vmx, dest]);
+      // Both tools can exit 0 while writing nothing (or somewhere else), so
+      // trust the filesystem, not the exit code.
+      if (!fs.existsSync(dest)) {
+        fail('screenshot was not written to ' + dest + ' — check the VM is powered on.');
       }
+      out('screenshot saved: ' + dest);
       return;
+    }
     case 'keys': {
       if (!pos[2]) fail('screen keys needs <keystrokes>.');
       // vmcli MKS works on a text console and needs no guest login; vmrun
