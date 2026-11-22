@@ -308,6 +308,20 @@ function yamlScalar(v) {
   return v;
 }
 
+/* Split `key: value` out of one mapping line.
+ *
+ * The key may be single-quoted and may contain a colon — `'sata0:0.present':
+ * TRUE` is ordinary vmcli output. Splitting on the first colon yields the key
+ * `'sata0` and drops the entry from the result entirely, which silently makes
+ * every device-slot lookup come back empty. So match a quoted key first. */
+function splitYamlEntry(txt) {
+  let m = txt.match(/^('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")\s*:\s*(.*)$/);
+  if (m) return { key: m[1].slice(1, -1), val: m[2], quoted: true };
+  m = txt.match(/^([^:]+):\s*(.*)$/);
+  if (m) return { key: m[1].trim(), val: m[2], quoted: false };
+  return null;
+}
+
 function parseYaml(text) {
   const items = [];
   const prose = [];
@@ -317,7 +331,8 @@ function parseYaml(text) {
     const txt = line.trim();
     // A line that is neither a mapping nor a list item is prose (e.g.
     // "No shared folders found. Try restarting the VM."). Keep it aside.
-    if (ind === 0 && !txt.startsWith('-') && !/^[^:]+:(\s|$)/.test(txt)) {
+    const entry = splitYamlEntry(txt);
+    if (ind === 0 && !txt.startsWith('-') && !entry) {
       prose.push(txt);
       continue;
     }
@@ -338,7 +353,7 @@ function parseYaml(text) {
       if (rest === '') {
         i++;
         arr.push(parseBlock(indent + 1));
-      } else if (/^[^:]+:(\s|$)/.test(rest)) {
+      } else if (splitYamlEntry(rest)) {
         // list item that is a map: first key inline, continuation keys indented by 2
         items[i] = { ind: indent + 2, txt: rest };
         arr.push(parseMap(indent + 2));
@@ -353,10 +368,10 @@ function parseYaml(text) {
   function parseMap(indent) {
     const obj = {};
     while (i < items.length && items[i].ind === indent && !items[i].txt.startsWith('-')) {
-      const m = items[i].txt.match(/^([^:]+):\s*(.*)$/);
-      if (!m) { i++; continue; }
-      const key = m[1].trim().replace(/^'(.*)'$/, '$1');
-      const val = m[2].trim();
+      const entry = splitYamlEntry(items[i].txt);
+      if (!entry) { i++; continue; }
+      const key = entry.key;
+      const val = entry.val.trim();
       i++;
       if (val === '') {
         if (i < items.length && items[i].ind > indent) obj[key] = parseBlock(items[i].ind);
@@ -686,7 +701,9 @@ const HELP = {
       '   config set <vm> <key> <value> write one config param',
   disk: 'disk list <vm>            disks / cdroms\n' +
       '   disk create <vm> <file.vmdk> <size> [--adapter ide|sata|scsi|lsilogic] [--type 0-3]\n' +
-      '   disk extend <vm> <label> <newSectors>   (label like scsi0:0)',
+      '     <size> needs a unit — 512MB, 50GB. A bare number is rejected by vmcli.\n' +
+      '   disk extend <vm> <label> <newSectors>   (label like scsi0:0)\n' +
+      '   disk remove <vm> <label> [--delete-file]   detach (default) or also delete the .vmdk',
   nic: 'nic list <vm>             network adapters\n' +
       '   nic set-type <vm> <label> <bridged|nat|hostonly|custom>\n' +
       '   nic set-present <vm> <label> <true|false>\n' +
@@ -694,7 +711,9 @@ const HELP = {
       '   nic set-device <vm> <label> <e1000|e1000e|vmxnet3|...>\n' +
       '   nic set-network <vm> <label> <vmnet name>\n' +
       '   nic purge <vm> <label>\n' +
-      '   nic add <vm> <type> <vmnet>   (REST only — CLIs cannot add a NIC)',
+      '   nic add <vm> <type> [vmnet]   (REST only — CLIs cannot add a NIC)\n' +
+      '     type is bridged|nat|hostonly|custom; <vmnet> only applies to custom.\n' +
+      '     The VM must be powered off.',
   net: 'net list                 host virtual networks\n' +
       '   net portforward-list <vmnet>\n' +
       '   net portforward-set <vmnet> <tcp|udp> <hostPort> <guestIp> <guestPort> [desc]\n' +
@@ -702,21 +721,23 @@ const HELP = {
       '   net create <name> <nat|hostOnly>   (REST only)',
   tools: 'tools status <vm>        VMware Tools state\n' +
       '   tools install <vm> | tools upgrade <vm>',
-  screen: 'screen capture <vm> <out.png>\n' +
-      '   screen keys <vm> <keystrokes>   (vmrun typeKeystrokesInGuest)',
+  screen: 'screen capture <vm> <out.png>     (vmcli MKS — no guest credentials needed)\n' +
+      '   screen keys <vm> <keystrokes>        (vmcli MKS, falls back to vmrun)\n' +
+      '     Types literal text; <Enter> <Tab> <Space> are translated.',
   device: 'device connect <vm> <name> | device disconnect <vm> <name>',
   vars: 'var read <vm> <runtimeConfig|guestEnv|guestVar> <name>\n' +
       '   var write <vm> <runtimeConfig|guestEnv|guestVar> <name> <value>',
   template: 'template create <vm> <out.vmtx> <name>\n' +
       '   template deploy <template.vmtx>      (vmcli: -p only; VM created beside it)',
   clone: 'clone <vm> <dest.vmx> [--full|--linked] [--snapshot <name>] [--name <n>]',
-  vmnew: 'vmnew <name> <dir> [--guest <id>] [--custom <guesttype>]   create a new VM\n' +
-      '   guest ids: 1 Other, 3 Win3.11, 5 Win95, 6 Win98, 7 WinME, 8 NT Workstation,\n' +
-      '   9 NT Server, 10 Win2000 Pro, 11 Win2000 Server, 12 WinXP Pro, 13 WinXP Server',
+  vmnew: 'vmnew <name> <dir> [--guest <guestos>]   create a new VM\n' +
+      '   <guestos> is a VMware guestOS name, e.g. rhel9-64, rockylinux-64, ubuntu-64,\n' +
+      '   windows9-64. Defaults to other6xlinux-64. The `-g` id list in vmcli --help\n' +
+      '   is stale: vmcli rejects numeric ids and wants a name.',
   rest: 'rest status | rest vms | rest vm <id> | rest vm-create <parentId> <name>\n' +
       '   rest vm-delete <id> | rest vm-update <id> [--processors n] [--memory mb]\n' +
       '   rest power <id> | rest power-set <id> <on|off|shutdown|suspend|pause|unpause>\n' +
-      '   rest nic-list <id> | rest nic-create <id> <type> <vmnet> | rest nic-delete <id> <idx>\n' +
+      '   rest nic-list <id> | rest nic-create <id> <type> [vmnet] | rest nic-delete <id> <idx>\n' +
       '   rest folder-list <id> | rest folder-create <id> <folderId> <hostPath> [--flags 4]\n' +
       '   rest folder-delete <id> <folderId> | rest ip <id>\n' +
       '   rest net-list | rest net-create <name> <type>\n' +
@@ -823,15 +844,29 @@ function cmdPower(args) {
   }
 }
 
+function snapshotList(vm) {
+  const q = parseOrRaw(vmcli(vm.vmx, 'Snapshot', 'query'));
+  return (q && q.snapshots) || [];
+}
+
 function snapshotUid(vm, nameOrUid) {
   if (/^\d+$/.test(nameOrUid)) return nameOrUid;
-  const q = parseOrRaw(vmcli(vm.vmx, 'Snapshot', 'query'));
-  const snaps = (q && q.snapshots) || [];
+  const snaps = snapshotList(vm);
   for (const s of snaps) {
     if (s && s.displayName === nameOrUid) return String(s.uid);
   }
   fail('No snapshot named "' + nameOrUid + '" on ' + vm.name + '. Available: ' +
     (snaps.map((s) => s.displayName + ' (uid ' + s.uid + ')').join(', ') || '(none)'));
+}
+
+// vmrun wants the display name, not the uid.
+function snapshotName(vm, nameOrUid) {
+  if (!/^\d+$/.test(nameOrUid)) return nameOrUid;
+  const snaps = snapshotList(vm);
+  for (const s of snaps) {
+    if (s && String(s.uid) === String(nameOrUid)) return s.displayName;
+  }
+  fail('No snapshot with uid ' + nameOrUid + ' on ' + vm.name + '.');
 }
 
 function cmdSnapshot(args) {
@@ -855,9 +890,12 @@ function cmdSnapshot(args) {
       return;
     }
     case 'revert': {
-      const uid = snapshotUid(vm, pos[2]);
-      vmcli(vm.vmx, 'Snapshot', 'Revert', [uid]);
-      out('reverted to uid ' + uid);
+      // vmcli Snapshot Revert refuses a running VM ("VM is in an invalid state
+      // (online)"), and reverting is exactly when you want to be able to do it.
+      // vmrun revertToSnapshot works in either power state.
+      const name = snapshotName(vm, pos[2]);
+      vmrun(['revertToSnapshot', vm.vmx, name]);
+      out('reverted to "' + name + '"');
       return;
     }
     case 'delete': {
@@ -1491,8 +1529,12 @@ function attachDisk(vm, file) {
   }
   let controller = controllers[0];
   if (!controller) {
+    // `Sata SetPresent` no-ops when the controller isn't in the .vmx yet and
+    // still exits 0 — same trap as `Ethernet SetPresent`. Write the config
+    // entry directly.
     controller = 'sata0';
-    vmcli(vmx, 'Sata', 'SetPresent', [controller, 'true']);
+    vmcli(vmx, 'ConfigParams', 'SetEntry', [controller + '.present', 'TRUE']);
+    vmcli(vmx, 'ConfigParams', 'SetEntry', [controller + '.virtualDev', 'ahci']);
     controllers.push(controller);
   }
 
@@ -1535,9 +1577,21 @@ function cmdDisk(args) {
       return;
     }
     case 'create': {
-      const file = pos[2];
+      let file = pos[2];
       const size = pos[3];
       if (!file || !size) fail('disk create needs <file.vmdk> and <size>.');
+      // vmcli rejects a bare number ("Input Disk Size is not within acceptable
+      // limits"), which reads like a permission problem rather than a typo.
+      // Don't guess the unit — 512 could be MB or GB.
+      if (!/^\d+\s*(MB|GB|KB|TB)$/i.test(size)) {
+        fail('disk create needs a unit in <size>: 512MB, 50GB. Got "' + size + '".');
+      }
+      // vmcli resolves a relative path against the *current directory*, which
+      // scatters .vmdk files wherever the shell happened to be. Anchor it to
+      // the VM instead, which is what anyone passing just a filename means.
+      if (!/^([A-Za-z]:[\\/]|[\\/]{2}|\/)/.test(file)) {
+        file = path.join(path.dirname(path.resolve(normVmx(vm.vmx))), file).replace(/\\/g, '/');
+      }
       const a = ['-f', file, '-s', size, '-a', String(flags.adapter || 'lsilogic'), '-t', String(flags.type || '0')];
       vmcli(vm.vmx, 'Disk', 'Create', a);
       // vmcli Disk Create only writes the .vmdk — the controller and the device
@@ -1554,6 +1608,28 @@ function cmdDisk(args) {
       vmcli(vm.vmx, 'Disk', 'Extend', [pos[2], pos[3]]);
       out('extended ' + pos[2]);
       return;
+    case 'remove': {
+      const label = pos[2];
+      if (!label) fail('disk remove needs a <label> (see `disk list`).');
+      // Read the backing file before the entry disappears, so --delete-file
+      // knows what to unlink.
+      const params = parseOrRaw(vmcli(vm.vmx, 'ConfigParams', 'query'));
+      const rel = params && params[label + '.fileName'];
+      vmcli(vm.vmx, 'Disk', 'SetPresent', [label, 'false']);
+      vmcli(vm.vmx, 'ConfigParams', 'SetEntry', [label + '.fileName', '']);
+      out('detached ' + label);
+      if (flags['delete-file'] && rel) {
+        const vmxDir = path.dirname(path.resolve(normVmx(vm.vmx)));
+        const abs = path.isAbsolute(rel) ? rel : path.join(vmxDir, rel);
+        try {
+          fs.unlinkSync(abs);
+          out('deleted ' + abs);
+        } catch (e) {
+          process.stderr.write('could not delete ' + abs + ': ' + e.message + '\n');
+        }
+      }
+      return;
+    }
     default:
       fail('Unknown disk subcommand: ' + sub + '\n' + HELP.disk);
   }
@@ -1605,11 +1681,16 @@ function cmdNic(args) {
       vmcli(vm.vmx, 'Ethernet', 'Purge', [pos[2]]);
       out('nic purged');
       return;
-    case 'add':
+    case 'add': {
       needRest();
-      const body = { type: pos[2], vmnet: pos[3] };
+      // vmrest rejects `vmnet` for nat / hostonly / bridged with
+      // "Redundant parameter" — those names are implied by the type. Only a
+      // custom vmnet needs to be named.
+      const body = { type: pos[2] };
+      if (pos[3] && String(pos[2]).toLowerCase() === 'custom') body.vmnet = pos[3];
       out(JSON.stringify(rest('POST', '/vms/' + encodeURIComponent(restVmId(vm.vmx)) + '/nic', body), null, 2));
       return;
+    }
     default:
       fail('Unknown nic subcommand: ' + sub + '\n' + HELP.nic);
   }
@@ -1684,10 +1765,28 @@ function cmdScreen(args) {
         out('screenshot saved: ' + pos[2]);
       }
       return;
-    case 'keys':
+    case 'keys': {
+      if (!pos[2]) fail('screen keys needs <keystrokes>.');
+      // vmcli MKS works on a text console and needs no guest login; vmrun
+      // typeKeystrokesInGuest fails with "Insufficient permissions in the host
+      // operating system" when no guest session can take input. MKS types the
+      // string literally, so translate the tokens people actually write.
+      // It accepts CR, TAB and printable text but rejects ESC and friends —
+      // those fall through to vmrun.
+      const tokenMap = {
+        '<enter>': '\r', '<return>': '\r', '<tab>': '\t', '<space>': ' ',
+      };
+      const seq = String(pos[2]).replace(/<(enter|return|tab|space)>/gi,
+        (m) => tokenMap[m.toLowerCase()]);
+      const r = run(vmcliPath(), [vm.vmx, 'MKS', 'sendKeySequence', seq]);
+      if (r.code === 0) {
+        out('keystrokes sent');
+        return;
+      }
       vmrunGuest(['typeKeystrokesInGuest', vm.vmx, pos[2]]);
       out('keystrokes sent');
       return;
+    }
     default:
       fail('Unknown screen subcommand: ' + sub + '\n' + HELP.screen);
   }
@@ -1726,9 +1825,11 @@ function cmdVars(args) {
       const needsGuest = scope === 'guestEnv' || scope === 'guestVar';
       const call = (args) => (needsGuest ? vmrunGuest(args) : vmrun(args));
       if (!scope) fail('var ' + sub + ' needs a scope: runtimeConfig | guestEnv | guestVar.');
+      if (!pos[3]) fail('var ' + sub + ' needs a <name>.');
       if (sub === 'read') {
         out(call(['readVariable', vm.vmx, scope, pos[3]]));
       } else {
+        if (pos[4] === undefined) fail('var write needs a <value>.');
         call(['writeVariable', vm.vmx, scope, pos[3], pos[4]]);
         out('variable written');
       }
@@ -1786,11 +1887,19 @@ function cmdVmNew(args) {
   const name = pos[0];
   const dir = pos[1];
   if (!name || !dir) fail('vmnew needs <name> and <dir>.\n' + HELP.vmnew);
-  const a = ['-n', name, '-d', dir];
-  if (flags.custom) a.push('-c', String(flags.custom));
-  else a.push('-g', String(flags.guest || '13'));
+  // vmcli's own help advertises numeric guest ids for -g, but the executable
+  // only accepts a name enum and rejects `-g 13`. `-c` takes any guestOS name,
+  // so use it for everything and keep `-g`'s short enum list out of the way.
+  const guest = String(flags.guest || flags.custom || 'other6xlinux-64');
+  const a = ['-n', name, '-d', dir, '-c', guest];
   vmcli(null, 'VM', 'Create', a);
-  out('created VM ' + name + ' in ' + dir);
+  // `VM Create` writes the .vmdk but no controller and no disk entry, exactly
+  // like `Disk Create`. Left alone the VM has a disk file it cannot boot from.
+  const vmx = path.join(path.resolve(normVmx(dir)), name + '.vmx').replace(/\\/g, '/');
+  const vmdk = path.join(path.resolve(normVmx(dir)), name + '.vmdk').replace(/\\/g, '/');
+  let attached = null;
+  if (fs.existsSync(vmdk)) attached = attachDisk({ vmx: vmx, name: name }, vmdk);
+  out('created VM ' + name + ' in ' + dir + (attached ? ' (disk attached as ' + attached + ')' : ''));
 }
 
 function cmdRest(args) {
@@ -1850,9 +1959,13 @@ function cmdRest(args) {
     case 'nic-list':
       out(JSON.stringify(rest('GET', '/vms/' + encodeURIComponent(vid(pos[1])) + '/nic'), null, 2));
       return;
-    case 'nic-create':
-      out(JSON.stringify(rest('POST', '/vms/' + encodeURIComponent(vid(pos[1])) + '/nic', { type: pos[2], vmnet: pos[3] }), null, 2));
+    case 'nic-create': {
+      // Same rule as `nic add`: vmrest only accepts `vmnet` for custom.
+      const body = { type: pos[2] };
+      if (pos[3] && String(pos[2]).toLowerCase() === 'custom') body.vmnet = pos[3];
+      out(JSON.stringify(rest('POST', '/vms/' + encodeURIComponent(vid(pos[1])) + '/nic', body), null, 2));
       return;
+    }
     case 'nic-delete':
       rest('DELETE', '/vms/' + encodeURIComponent(vid(pos[1])) + '/nic/' + encodeURIComponent(pos[2]));
       out('nic deleted');

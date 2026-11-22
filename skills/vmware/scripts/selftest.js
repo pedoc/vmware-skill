@@ -158,6 +158,20 @@ check('keeps prose instead of mangling it', () => {
 check('quoted scalars lose their quotes', () => {
   assertEqual(I.yamlScalar("'a b'"), 'a b');
 });
+check('quoted keys keep their colons', () => {
+  // Real vmcli ConfigParams output. Splitting on the first colon would give
+  // the key "'sata0" and silently drop every device entry.
+  const v = I.parseYaml("'sata0:0.present': TRUE\n'sata0:0.fileName': 'a.vmdk'\n'sata0.present': TRUE\n");
+  assertEqual(v, {
+    'sata0:0.present': 'TRUE',
+    'sata0:0.fileName': 'a.vmdk',
+    'sata0.present': 'TRUE',
+  });
+});
+check('a quoted key with a colon is not mistaken for prose', () => {
+  const v = I.parseYaml("'mem.hotadd': TRUE\n");
+  assertEqual(v, { 'mem.hotadd': 'TRUE' });
+});
 check('numbers become numbers', () => {
   assertEqual(I.yamlScalar('42'), 42);
   assertEqual(I.yamlScalar('1.5'), 1.5);

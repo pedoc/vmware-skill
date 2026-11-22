@@ -5,9 +5,8 @@ Control VMware Workstation Pro virtual machines from Claude Code — **no MCP se
 Wraps VMware's own `vmrun.exe` / `vmcli.exe` / `vmrest.exe` behind a single zero-dependency
 Node script. Commands run and exit; nothing stays resident.
 
-> Built by reading the source of [`ZacharyZcR/vmware-mcp`](https://github.com/ZacharyZcR/vmware-mcp)
-> and cross-checking every command against a live VMware Workstation Pro 26.0.1 install.
-> See [Relationship to vmware-mcp](#relationship-to-vmware-mcp) below.
+Every command was checked against a live VMware Workstation Pro 26.0.1 install, on both a
+Windows Server guest and a Rocky Linux guest.
 
 ## Install
 
@@ -80,8 +79,8 @@ Name resolution reads VMware's own `inventory.vmls`, so **vmrest does not need t
 | `shared` | shared folders `list` `add` `remove` `set` `enable` `disable` |
 | `chipset` | `query` `cpu` `memory` `cores` |
 | `config` | read/write `.vmx` config params |
-| `disk` | `list` `create` `extend` |
-| `nic` | `list` `set-type` `set-present` `set-device` `set-network` `purge` `add` |
+| `disk` | `list` `create` `extend` `remove` |
+| `nic` | `list` `set-type` `set-present` `set-connected` `set-device` `set-network` `purge` `add` |
 | `net` | host networks `list`, port forwarding `list`/`set`/`delete` |
 | `tools` | `status` `install` `upgrade` |
 | `screen` | `capture` (screenshot — **no guest password needed**) / `keys` |
@@ -144,6 +143,27 @@ tells you it's usable:
 node scripts/vmware.js guest ready "Win10" --timeout 300
 ```
 
+## Console: screenshots and keystrokes
+
+`screen` goes through `vmcli MKS`, so it needs **no guest credentials** and works on a plain text
+console — including before VMware Tools is installed:
+
+```sh
+node scripts/vmware.js screen capture "Rocky9" "C:/shots/boot.png"
+node scripts/vmware.js screen keys "Rocky9" "root<Enter>"
+node scripts/vmware.js screen keys "Rocky9" "$VMWARE_GUEST_PASS<Enter>"
+```
+
+Expand the password from the environment rather than typing it into the command, so it stays out
+of shell history.
+
+Keystrokes are typed literally; only `<Enter>`, `<Tab>` and `<Space>` are translated. Arrow keys
+and `<Esc>` are rejected by MKS and fall back to `vmrun typeKeystrokesInGuest`, which often fails
+on a text console with `Insufficient permissions in the host operating system`.
+
+This is the way in when a guest has no Tools and no SSH yet: log in at the console, bring the
+network up, then switch to SSH or install Tools.
+
 ## Git Bash / MSYS2 on Windows
 
 Claude Code on Windows runs commands through Git Bash, which rewrites `/c`, `/tmp` and friends
@@ -201,13 +221,14 @@ with unrelated tooling and don't say whether they mean the guest or the REST API
 
 These were verified against a live install, not inferred from docs:
 
-1. **`vmcli` arguments are mostly positional**, not `-flag value`. The upstream `vmware-mcp`
-   project uses a flag style that doesn't exist:
+1. **`vmcli` arguments are mostly positional**, not `-flag value`:
    - `Ethernet SetPresent ethernet0 true` ✅ — `Ethernet SetPresent -i 0 -e true` ❌ (`Invalid/unrecognized argument "-e"`)
    - `Snapshot Take <name>` ✅ — `-n` is `--native`, not the name
    - `ConfigParams SetEntry <name> <value>` ✅ — not `-k`/`-v`
    - in `Guest`, `-p` is the **password**; the program path is positional
    - `Disk Create` needs `-f <file.vmdk>`; `-t` is an integer type (0–3), not `"scsi"`
+   - `Guest ps -f` documents `<0,1,2>` but only accepts `toml|yaml|json`
+   - `VM Create -g` documents numeric ids but only accepts a guestOS name — this skill uses `-c`
 2. **vmcli exits 0 on success, 127 on failure**; errors go to stderr.
 3. **vmcli output is a YAML subset** — parsed to JSON here. Table output stays verbatim.
 4. **Install paths differ by version** — `C:\Program Files\VMware\...` on modern releases,
@@ -220,7 +241,7 @@ These were verified against a live install, not inferred from docs:
    or `VMware Tools are not running in the guest` — a false message, Tools is fine. Repeated
    failures also wedge the guest channel, after which *every* guest operation times out until
    the VM is rebooted. All file transfers here therefore go through `vmrun`, which handles
-   arbitrary sizes (100 MB in ~28 s).
+   arbitrary sizes (100 MB in ~44 s on a Linux guest).
 8. **`vmrun` re-quotes arguments containing spaces**, and `cmd.exe` then strips only one set of
    quotes — trailing up to a stray `"` in your command's output. `guest exec` avoids this by
    shipping the command as a script file instead of passing it inline.
@@ -234,34 +255,35 @@ These were verified against a live install, not inferred from docs:
 12. **Value-taking flags need `--flag value`, which the parser now honours.** Boolean flags are
     listed in `VALUE_FLAGS`; `--memory` is boolean for `snapshot take` and numeric for
     `rest vm-update`.
-13. **`Ethernet SetPresent` silently does nothing when the label isn't already in the `.vmx`**,
-    and still exits 0. `nic set-present` / `set-connected` write the config entry instead.
+13. **`Ethernet SetPresent` / `Sata SetPresent` silently do nothing when the label isn't
+    already in the `.vmx`**, and still exit 0. `nic set-present` / `set-connected` and the disk
+    attach path write the config entry instead.
 14. **`vmcli Disk Create` only writes the `.vmdk`; it does not attach it.** Without a
     `sataN:M.fileName` entry and a controller the VM's `disks` array stays empty. `disk create`
-    now attaches automatically; pass `--no-attach` for a bare file.
-15. **VMs created by `vmnew` / `snapshot clone` are not registered in `inventory.vmls`**, so
+    attaches automatically; pass `--no-attach` for a bare file. `VM Create` (behind `vmnew`)
+    has the same gap — it returns a VM whose disk file is unattached and therefore unbootable.
+    Both are fixed here.
+15. **`disk create` needs a unit in the size** (`512MB`, `50GB`). A bare number is rejected with
+    `Input Disk Size is not within acceptable limits`, which reads like a permissions problem.
+    `disk remove` detaches, `--delete-file` also unlinks the `.vmdk`.
+16. **Never `grep -v` a `.vmx` to strip device entries** — it takes the boot disk with it and the
+    VM then stops at `Operating System not found`. Use `disk remove` / `config set`.
+17. **VMs created by `vmnew` / `snapshot clone` are not registered in `inventory.vmls`**, so
     they can't be addressed by name until Workstation has opened them once. Use the `.vmx` path.
-16. **`snapshot clone` and `clone` need the destination directory to exist**, otherwise
+18. **`snapshot clone` and `clone` need the destination directory to exist**, otherwise
     `Could not find the file`.
-17. **`template deploy` accepts only `-p <template.vmtx>`** — there is no destination or name
+19. **`template deploy` accepts only `-p <template.vmtx>`** — there is no destination or name
     option; the VM lands beside the template and inherits its name.
-18. **`net portforward-set/delete` can fail with `Failed to refresh NAT configuration`** even
+20. **`net portforward-set/delete` can fail with `Failed to refresh NAT configuration`** even
     though `vmnetnat.conf` was updated correctly. Plain `vmrun` fails the same way; restart
     `VMware NAT Service` to clear it.
-
-## Relationship to vmware-mcp
-
-[`ZacharyZcR/vmware-mcp`](https://github.com/ZacharyZcR/vmware-mcp) exposes the same
-capability surface as an MCP server with 117 tools. This project takes the same capability set
-and expresses it as a skill plus a single script, because:
-
-- **No daemon, no protocol layer.** The capability is "invoke these CLIs" — an MCP server adds
-  a process, a transport, and a failure surface for no gain.
-- **The upstream vmcli layer doesn't work.** Its `vmcli.py` invents flag syntax that the real
-  `vmcli.exe` rejects. Every command here was checked against `vmcli --help` on a live install.
-- **The upstream tool needs the REST API up just to resolve a VM name** to a `.vmx` path.
-  Here, name resolution reads VMware's own `inventory.vmls`, so the CLIs work standalone.
-- **Hardcoded `(x86)` paths** in the upstream project break on current releases.
+21. **`nic add` is REST-only and rejects `vmnet` unless the type is `custom`**
+    (`Redundant parameter: vmnet8`). The VM must be powered off.
+22. **`snapshot revert` goes through `vmrun`, not `vmcli`** — vmcli refuses a running VM with
+    `VM is in an invalid state (online)`, which is exactly when you want to revert.
+23. **`screen keys` translates only `<Enter>`, `<Tab>`, `<Space>`.** MKS types literal text and
+    rejects ESC and arrow keys; those fall back to `typeKeystrokesInGuest`, which usually fails
+    on a text console.
 
 ## Development
 

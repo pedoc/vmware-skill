@@ -125,25 +125,34 @@ vmcli.exe [<vmx location>] <Module> <Command> [<args>]
 
 **Snapshot** — `query` / `Take <name> [-m] [-d <desc>]` / `Revert <uid>` / `Delete <uid> [-d]` / `Clone <uid> <filePath> <name> [-l] [-o]`
 
-> `Take`/`Revert`/`Delete`/`Clone` 用 **uid**，不是名字。名字 → uid 用 `Snapshot query` 查（`snapshots[].displayName` / `.uid`）。
+> `Take` 用名字，`Revert`/`Delete`/`Clone` 用 **uid**。名字 → uid 用 `Snapshot query` 查（`snapshots[].displayName` / `.uid`）。
+>
+> **`Revert` 要求 VM 关机**，开机时报 `VM is in an invalid state (online)`——而这正是最需要回滚的时候。
+> 回滚请用 `vmrun revertToSnapshot <vmx> <name>`，它两种电源状态都能用。
 
 **Guest**（全部需 `-u <user> -p <pass>`）
 `ls <path> [-r <regexp>] [-i <index>] [-m <max>]` / `mkdir <path> [-parent]` / `rmdir <path> [-r]` / `rm <path>` /
 `mv <from> <to> [-o]` / `copyTo <from> <to> [-o]` / `copyFrom <from> <to> [-o]` /
-`run <program> [programArgs] [-nw] [-aw] [-i] [-w <dir>] [-e <env>]` / `ps [-pid <pid>] [-f <0|1|2>]` /
+`run <program> [programArgs] [-nw] [-aw] [-i] [-w <dir>] [-e <env>]` / `ps [-pid <pid>] [-f <toml|yaml|json>]` /
 `kill <pid>` / `env` / `createTempFile <prefix> <suffix> <dir>` / `createTempDir` / `query` / `toolsproperties`
+
+> `ps -f` 的 help 写 `<0,1,2>`，实际只接受 `toml` / `yaml` / `json`；不给 `-f` 时是 YAML。
 
 > ⚠️ `copyTo` / `copyFrom` **只能传 64KB 以内的文件**。64KB 报 `Unknown error`，再大报
 > `VMware Tools are not running in the guest`（假消息）。连续失败几次还会卡死客户机通道，
 > 之后所有 guest 操作超时，**只能重启 VM 恢复**。
 > 文件传输一律用 vmrun 的 `copyFileFromHostToGuest` / `copyFileFromGuestToHost`。
-> 本机实测：100MB 单文件 28 秒；vmrun 支持任意大小，vmcli 只到 64KB。
+> 本机实测：100MB 单文件 Windows 客户机约 28 秒、Rocky Linux 客户机约 44 秒；vmrun 支持任意大小，vmcli 只到 64KB。
 
 **MKS** — `query` / `captureScreenshot <filename>` / `sendKeySequence <sequence>` / `sendKeyEvent` /
 `SetGuestResolution <w> <h>` / `SetNumDisplays <n>` / `SetVramSize <n>` / `SetGraphicsMemoryKB <n>` /
 `SetAccel3d` / `SetRenderer3d` / `SetFullscreenAtPowerOn` / `SetFullScreenOnAllHostDisplays`
 
 > `captureScreenshot` **不需要客户机凭据**——这是截图的首选路径（vmrun 的 `captureScreen` 需要）。
+>
+> `sendKeySequence` 按**字面文本**输入，`<Enter>` 这类标记不解析，要发真实回车得传 `\r`。
+> `\r` 和 `\t` 可用，`\033`（ESC）报 `Unknown error` 并返回 127。文字控制台上不需要客户机凭据，
+> 所以 VM 没装 Tools 时这是唯一的输入通道。
 
 **Tools** — `Query` / `Install` / `Upgrade`（`Install`/`Upgrade` 可选 `-c <cmdline>` `-bt <0|1|2>` `-bp <path>`）
 
@@ -152,7 +161,11 @@ vmcli.exe [<vmx location>] <Module> <Command> [<args>]
 `SetReadOnly` `SetMode` `SetSharing` `SetStartConnected` `ConnectionControl` `Branch` `Move` `SetBackingInfo` …
 
 > `Create` 必须给 `-f`（磁盘文件路径）。`-t` 是**整数**类型：0=单文件可增长，1=分片可增长，2=预分配，3=分片预分配。
+> `-s` 必须带单位（`512MB`、`50GB`），裸数字报 `Input Disk Size is not within acceptable limits`。
 > `Extend` 的第二个参数是**扇区数**，不是 GB。
+>
+> **`Create` 只写 `.vmdk`，不挂接**：不补 `<controller>.present`、`sataN:M.fileName` 和设备条目，
+> 虚机的 `disks` 数组始终为空，虚机也无法从这块盘启动。`VM Create`（`vmnew`）同样如此。
 
 **Ethernet** — `query` / `SetConnectionType <label> <type>` / `SetPresent <label> <present>` /
 `SetStartConnected <label> <connected>` / `SetVirtualDevice <label> <device>` / `SetNetworkName <label> <name>` /
@@ -169,9 +182,13 @@ vmcli.exe [<vmx location>] <Module> <Command> [<args>]
 > **改共享文件夹请用 `vmrun`**（`addSharedFolder` / `removeSharedFolder` / `setSharedFolderState`），
 > 那边的实现是好的。`vmcli HGFS query` 只能读。
 >
-> 另外 `vmrun addSharedFolder` **要求虚拟机关机状态之外的运行状态**（需开机，报
-> `The virtual machine is not powered on`），且 `removeSharedFolder` 之后 `.vmx` 里会残留
-> `sharedFolder0.*` 文本，需要手动清理或重启 VMware 让它重写。
+> `vmrun addSharedFolder` / `removeSharedFolder` **要求 VM 开机**（关机时报
+> `The virtual machine is not powered on`）。
+>
+> **新加或改过的共享文件夹要重启 VM 才生效**：运行中 `HGFS query` 会返回空列表，`.vmx` 里其实已经写好了。
+>
+> `removeSharedFolder` 之后 `.vmx` 里会残留 `sharedFolder0.*` 文本，`sharedFolder.maxNum = "0"`
+> 表示实际已无生效共享；残留行重启 VMware 后会重写。
 
 
 **Sata / Nvme / Serial** — `query` / `SetPresent <label> <bool>` / `Purge <label>`
@@ -179,16 +196,20 @@ vmcli.exe [<vmx location>] <Module> <Command> [<args>]
 
 **VMTemplate** — `Create -p <out.vmtx> -n <name>`（需 vmx 作为第一个参数） / `Deploy -p <file.vmtx>`（无 vmx 参数）
 
-**VM** — `Create -n <name> -d <dir> -g <guestId>` 或 `-c <customGuestType>`
+**VM** — `Create -n <name> -d <dir> -g <guestType>` 或 `-c <customGuestType>`
 
-> guest id：1=Other, 3=Win3.11, 5=Win95, 6=Win98, 7=WinME, 8=NT Workstation, 9=NT Server,
-> 10=Win2000 Pro, 11=Win2000 Server, 12=WinXP Pro, 13=WinXP Server
+> **`-g` 的 help 里那串数字 id 是过时的**——传 `-g 13` 会报
+> `Invalid argument: '13', valid enums are: ...`，实际只收名字（`rhel9-64`、`centos9-64`、`ubuntu-64`、`windows9-64` …）。
+> `-c` 收任意 guestOS 名（`rockylinux-64` 等），更通用，本 skill 一律用 `-c`。
 
 **VProbes** — `Query` / `SetEnabled <bool>` / `Load <script>` / `Reset`
 
-**ConfigParams** — `query [-f <0|1|2>]` / `SetEntry <name> <value>`
+**ConfigParams** — `query [-f <toml|yaml|json>]` / `SetEntry <name> <value>`
 
-> `query` 返回 `.vmx` 里的**所有**配置项（键名如 `cpuid.coresPerSocket`）。改 CPU 核心数等用这里最直接。
+> `query` 返回 `.vmx` 里的**所有**配置项。含冒号的键会带单引号（`'sata0:0.present': TRUE`），
+> 按第一个冒号切分会丢掉整条，解析时要先认引号键。
+> **`SetEntry` 是唯一可靠的"写设备条目"手段**：`Ethernet SetPresent`、`Sata SetPresent`
+> 在标签不存在时静默无效还返回 0。
 
 ### 输出格式
 

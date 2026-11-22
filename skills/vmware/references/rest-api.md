@@ -93,7 +93,10 @@ skill 的 `rest` 子命令**接受 VM 名字**，会自动按 `.vmx` 路径映�
 | DELETE | `/vms/{id}/nic/{index}` | — |
 
 `type`：`custom` / `bridged` / `nat` / `hostonly`
-`vmnet`：网络名（仅 `custom` 类型需要）
+`vmnet`：网络名，**只能用于 `custom`**。给 nat / hostonly 传 `vmnet` 会被拒：
+`{"Code":121,"Message":"Redundant parameter: vmnet8 for this operation"}`。
+
+VM 必须关机，否则返回 `Invalid configuration for device '0'`。
 
 返回：`{num, nics: [{index, type, vmnet, macAddress}]}`
 
@@ -156,7 +159,8 @@ node $SKILL rest vms                 # 列出 VM（id + path）
 node $SKILL rest power "Win10"       # 用名字即可
 node $SKILL rest power-set "Win10" on
 node $SKILL rest nic-list "Win10"
-node $SKILL rest nic-create "Win10" nat vmnet8
+node $SKILL rest nic-create "Win10" nat            # nat/hostonly 不要传 vmnet
+node $SKILL rest nic-create "Win10" custom vmnet8  # 只有 custom 才要 vmnet
 node $SKILL rest folder-create "Win10" share1 "C:/share" --flags 4
 node $SKILL rest pf-list vmnet8
 node $SKILL rest pf-set vmnet8 tcp 8080 192.168.1.10 80
