@@ -6,13 +6,13 @@
     "name": "pedoc"
   },
   "license": "MIT",
-  "homepage": "https://github.com/pedoc/claude-skills-vmware#readme",
+  "homepage": "https://github.com/pedoc/vmware-skill#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pedoc/claude-skills-vmware.git"
+    "url": "git+https://github.com/pedoc/vmware-skill.git"
   },
   "bugs": {
-    "url": "https://github.com/pedoc/claude-skills-vmware/issues"
+    "url": "https://github.com/pedoc/vmware-skill/issues"
   },
   "keywords": [
     "claude-code",

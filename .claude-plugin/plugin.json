@@ -8,7 +8,7 @@
   },
   "keywords": ["vmware", "workstation", "vmrun", "vmcli", "virtual-machine"],
   "license": "MIT",
-  "homepage": "https://github.com/pedoc/claude-skills-vmware",
-  "repository": "https://github.com/pedoc/claude-skills-vmware",
+  "homepage": "https://github.com/pedoc/vmware-skill",
+  "repository": "https://github.com/pedoc/vmware-skill",
   "skills": ["./skills/vmware"]
 }

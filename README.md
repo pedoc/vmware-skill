@@ -1,4 +1,4 @@
-# claude-skills-vmware
+# vmware-skill
 
 Control VMware Workstation Pro virtual machines from Claude Code — **no MCP server, no daemon**.
 
@@ -14,14 +14,14 @@ Node script. Commands run and exit; nothing stays resident.
 ### Claude Code (recommended)
 
 ```bash
-/plugin marketplace add pedoc/claude-skills-vmware
+/plugin marketplace add pedoc/vmware-skill
 /plugin install vmware@pedoc-skills
 ```
 
 ### Any agent that supports the open skills standard
 
 ```bash
-npx skills add pedoc/claude-skills-vmware
+npx skills add pedoc/vmware-skill
 ```
 
 Or install just the CLI for scripting:
