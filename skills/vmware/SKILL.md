@@ -145,7 +145,11 @@ node scripts/vmware.js guest ready "Win10" --timeout 300
 - `nic add` —— 增加一块网卡
 - `net create` —— 新建虚拟网络
 - `rest vm-create` —— 克隆一台 VM
-- `rest vm-update` —— 改 CPU/内存
+- `rest vm-update` —— 改 CPU/内存（VM 需关机）
+
+**注意 vmnet 层写操作 REST 一律 403**（端口转发、新建虚拟网络、mactoip），
+即使以 Administrator 运行 vmrest。这类改动请走 CLI：`vmrun setPortForwarding`。
+详见 [references/rest-api.md](references/rest-api.md)。
 
 启动 vmrest（**首次需要配置凭据**，交互式，密码复杂度要求：≥8 位、小写、数字、特殊字符）：
 

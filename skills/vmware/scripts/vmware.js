@@ -577,7 +577,9 @@ const mod=u.protocol==='https:'?https:http;
 const ru=process.env.VMWARE_REST_USER, rp=process.env.VMWARE_REST_PASSWORD||'';
 const auth=ru?Buffer.from(ru+':'+rp).toString('base64'):null;
 const headers={};
-if(body){headers['Content-Type']='application/json';}
+// vmrest only accepts its own media type on writes; a plain application/json
+// is answered with HTTP 406 "Content type not supported".
+if(body){headers['Content-Type']='application/vnd.vmware.vmw.rest-v1+json';headers['Accept']='application/vnd.vmware.vmw.rest-v1+json';}
 if(auth){headers['Authorization']='Basic '+auth;}
 const req=mod.request(u,{method,headers},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{
   process.stdout.write(JSON.stringify({status:res.statusCode,body:d}));

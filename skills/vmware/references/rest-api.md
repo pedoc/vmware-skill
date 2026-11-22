@@ -30,6 +30,24 @@ export VMWARE_REST_PASSWORD=...
 
 Base URL：`http://<host>:<port>/api`
 
+**Content-Type 必须是 `application/vnd.vmware.vmw.rest-v1+json`**，写操作尤其如此。
+用普通的 `application/json` 会收到 `HTTP 406 "Content type not supported"`
+（看起来像路径或参数写错，实际只是媒体类型不对）。
+
+## 权限分层（实测）
+
+不是所有写操作都能用。以 Administrator 身份运行 vmrest 时实测：
+
+| 范围 | 写操作 | 结果 |
+|---|---|---|
+| VM 本身 | `vm-update`（改 CPU/内存）、`power-set` | 可用 |
+| VM 文件夹 | `folder-create` / `folder-delete` | 可用 |
+| **虚拟网络层** | `portforward`（PUT/DELETE）、`vmnets`（PUT）、`mactoip` | **一律 403** `The operation is not permitted` |
+
+网络层写操作的 403 不是因为凭据错误——同一凭据的 `GET` 与 VM 写操作都正常。
+这是 VMware 对 vmnet 配置的额外限制。需要修改端口转发或新建虚拟网络时，
+用 `vmrun setPortForwarding`（CLI 路径）而不是 REST。
+
 ## VM id
 
 REST 用**自己的哈希 id**（30 位大写字母数字），和 `inventory.vmls` 里的 `ItemID` **不是一回事**。
