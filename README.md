@@ -11,20 +11,19 @@ Node script. Commands run and exit; nothing stays resident.
 
 ## Install
 
-### Claude Code (recommended)
-
-```bash
-/plugin marketplace add pedoc/vmware-skill
-/plugin install vmware@pedoc-skills
-```
-
-### Any agent that supports the open skills standard
-
 ```bash
 npx skills add pedoc/vmware-skill
 ```
 
 Add `-g` to install globally (user-level) rather than into the current project.
+The skill lands in `~/.agents/skills/vmware/`, symlinked into each detected agent's
+skill directory — Claude Code included.
+
+To update it later:
+
+```bash
+npx skills update vmware -g
+```
 
 ### CLI only (for scripting)
 
