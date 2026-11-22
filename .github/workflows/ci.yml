@@ -14,7 +14,9 @@ jobs:
         with:
           node-version: '20'
       - name: Syntax check
-        run: node --check skills/vmware/scripts/vmware.js
+        run: node --check skills/vmware/scripts/vmware.js && node --check skills/vmware/scripts/selftest.js
+      - name: Self-test (no VM required)
+        run: node skills/vmware/scripts/selftest.js
       - name: Smoke test
         run: node skills/vmware/scripts/vmware.js help
       - name: Validate manifests
