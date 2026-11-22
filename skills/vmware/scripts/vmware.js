@@ -1010,6 +1010,10 @@ function guestExecCapture(vm, cmdline) {
  * trip proves the channel is usable.
  */
 function guestReady(vm, budgetMs) {
+  // Validate credentials up front. The probe below swallows errors by design
+  // (a wedged channel must read as "not ready"), which would otherwise turn
+  // "you forgot VMWARE_GUEST_PASS" into a misleading `ready: false`.
+  guestCreds();
   const started = Date.now();
   const limit = budgetMs > 0 ? budgetMs : 180000;
   let tools = 'unknown';
