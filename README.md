@@ -24,9 +24,13 @@ Node script. Commands run and exit; nothing stays resident.
 npx skills add pedoc/vmware-skill
 ```
 
-Or install just the CLI for scripting:
+Add `-g` to install globally (user-level) rather than into the current project.
+
+### CLI only (for scripting)
 
 ```bash
+npx claude-skill-vmware vm list --power
+# or
 npm install -g claude-skill-vmware
 claude-skill-vmware vm list --power
 ```
@@ -146,6 +150,17 @@ and expresses it as a skill plus a single script, because:
 - **The upstream tool needs the REST API up just to resolve a VM name** to a `.vmx` path.
   Here, name resolution reads VMware's own `inventory.vmls`, so the CLIs work standalone.
 - **Hardcoded `(x86)` paths** in the upstream project break on current releases.
+
+## Development
+
+```bash
+git clone https://github.com/pedoc/vmware-skill.git
+cd vmware-skill
+npm test          # syntax check + smoke test
+```
+
+Releases are published to npm automatically when a GitHub release is published
+(requires the `NPM_TOKEN` repository secret).
 
 ## License
 
