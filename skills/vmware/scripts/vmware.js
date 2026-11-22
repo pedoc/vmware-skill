@@ -1072,6 +1072,27 @@ function guestReady(vm, budgetMs) {
   };
 }
 
+/**
+ * Parse `vmcli Guest env` output into a map.
+ *
+ * The format is `KEY=VALUE KEY=VALUE ...` on a single line. Values may contain
+ * spaces (PATH, ProgramFiles), so a naive split on whitespace is wrong — split
+ * on the boundary where a space is followed by something that looks like a new
+ * `KEY=`.
+ */
+function parseGuestEnv(text) {
+  const body = String(text || '').trim();
+  if (!body) return {};
+  const parts = body.split(/\s+(?=[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?=)/);
+  const result = {};
+  for (const part of parts) {
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    result[part.slice(0, eq)] = part.slice(eq + 1);
+  }
+  return result;
+}
+
 function cmdGuest(args) {
   const { flags, pos } = splitArgs(args);
   const sub = pos[0];
@@ -1240,7 +1261,14 @@ function cmdGuest(args) {
     case 'dir-exists': {
       if (!pos[2]) fail('guest ' + sub + ' needs a path.');
       // A query, not an assertion: an absent path is a normal answer, not an error.
-      out(guestPathExists(vm, pos[2], sub === 'dir-exists' ? 'dir' : 'file') ? 'true' : 'false');
+      const isDir = sub === 'dir-exists';
+      const found = guestPathExists(vm, pos[2], isDir ? 'dir' : 'file');
+      if (!found && !isDir && guestPathExistsQuiet(vm, pos[2], 'dir')) {
+        // Answering a bare "false" for a directory is technically right but
+        // reads like a bug; say which command was actually needed.
+        process.stderr.write(pos[2] + ' is a directory — use `guest dir-exists`.\n');
+      }
+      out(found ? 'true' : 'false');
       return;
     }
     case 'temp': {
@@ -1249,8 +1277,11 @@ function cmdGuest(args) {
       return;
     }
     case 'env': {
-      const q = parseOrRaw(vmcliGuest(vm.vmx, 'Guest', 'env', []));
-      out(JSON.stringify(q, null, 2));
+      // vmcli prints the environment as one long space-separated `K=V K=V`
+      // line, not YAML — feeding it to parseOrRaw produced a single bogus key
+      // with the entire environment stuffed into it.
+      const raw = vmcliGuest(vm.vmx, 'Guest', 'env', []);
+      out(JSON.stringify(parseGuestEnv(raw), null, 2));
       return;
     }
     default:
@@ -1409,9 +1440,22 @@ function attachDisk(vm, file) {
   while (used.has(slot)) slot++;
   const label = 'sata' + controllerIndex + ':' + slot;
 
-  vmcli(vmx, 'ConfigParams', 'SetEntry', [label + '.fileName', file]);
+  // .vmx device paths must be written the way VMware itself writes them:
+  // relative to the .vmx when the disk sits beside it, otherwise an absolute
+  // path with backslashes. A forward-slash absolute path is accepted silently
+  // but later breaks every disk operation — `Disk Extend` fails with
+  // "The filename, directory name, or volume label syntax is incorrect".
+  vmcli(vmx, 'ConfigParams', 'SetEntry', [label + '.fileName', vmxRelativePath(vmx, file)]);
   vmcli(vmx, 'Disk', 'SetPresent', [label, 'true']);
   return label;
+}
+
+/** Path for a .vmx device entry: basename if colocated, else backslash absolute. */
+function vmxRelativePath(vmxPath, targetPath) {
+  const vmxDir = path.dirname(path.resolve(normVmx(vmxPath)));
+  const abs = path.resolve(normVmx(targetPath));
+  if (path.dirname(abs).toLowerCase() === vmxDir.toLowerCase()) return path.basename(abs);
+  return abs.replace(/\//g, '\\');
 }
 
 function cmdDisk(args) {
@@ -1607,12 +1651,23 @@ function cmdVars(args) {
   const vm = vmArg(pos, 1);
   switch (sub) {
     case 'read':
-      out(vmrun(['readVariable', vm.vmx, pos[2], pos[3]]));
+    case 'write': {
+      // guestEnv / guestVar live in the guest OS, so vmrun demands a guest
+      // login for them; runtimeConfig does not. Passing credentials for
+      // runtimeConfig too is harmless, so always use the guest form for the
+      // two guest scopes and the plain form for runtimeConfig.
+      const scope = pos[2];
+      const needsGuest = scope === 'guestEnv' || scope === 'guestVar';
+      const call = (args) => (needsGuest ? vmrunGuest(args) : vmrun(args));
+      if (!scope) fail('var ' + sub + ' needs a scope: runtimeConfig | guestEnv | guestVar.');
+      if (sub === 'read') {
+        out(call(['readVariable', vm.vmx, scope, pos[3]]));
+      } else {
+        call(['writeVariable', vm.vmx, scope, pos[3], pos[4]]);
+        out('variable written');
+      }
       return;
-    case 'write':
-      vmrun(['writeVariable', vm.vmx, pos[2], pos[3], pos[4]]);
-      out('variable written');
-      return;
+    }
     default:
       fail('Unknown var subcommand: ' + sub + '\n' + HELP.vars);
   }
@@ -1872,6 +1927,7 @@ module.exports = {
   guestJoin: guestJoin,
   osFamilyOf: osFamilyOf,
   splitArgs: splitArgs,
+  parseGuestEnv: parseGuestEnv,
   HELP: HELP,
   get cliTimeoutMs() { return cliTimeoutMs; },
   resetCliTimeout: function () { cliTimeoutMs = null; },

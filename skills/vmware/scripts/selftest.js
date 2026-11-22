@@ -171,6 +171,29 @@ check('leaves forward slashes alone', () => {
   assertEqual(I.normVmx('K:/VMs/x.vmx'), 'K:/VMs/x.vmx');
 });
 
+process.stdout.write('guest env parsing\n');
+check('splits KEY=VALUE pairs on boundaries, not plain whitespace', () => {
+  const parsed = I.parseGuestEnv(
+    'OS=Windows_NT Path=C:\\Windows;C:\\Windows\\System32 USERNAME=Administrator'
+  );
+  assertEqual(parsed.OS, 'Windows_NT');
+  assertEqual(parsed.Path, 'C:\\Windows;C:\\Windows\\System32');
+  assertEqual(parsed.USERNAME, 'Administrator');
+});
+check('keeps spaces inside values', () => {
+  const parsed = I.parseGuestEnv('ProgramFiles=C:\\Program Files COMMON=x');
+  assertEqual(parsed.ProgramFiles, 'C:\\Program Files');
+  assertEqual(parsed.COMMON, 'x');
+});
+check('handles keys with parentheses', () => {
+  const parsed = I.parseGuestEnv('ProgramFiles(x86)=C:\\Program Files (x86) PUBLIC=C:\\Users\\Public');
+  assertEqual(parsed['ProgramFiles(x86)'], 'C:\\Program Files (x86)');
+  assertEqual(parsed.PUBLIC, 'C:\\Users\\Public');
+});
+check('empty input yields an empty map', () => {
+  assertEqual(I.parseGuestEnv(''), {});
+});
+
 process.stdout.write('guest OS family detection\n');
 check('windows guests', () => {
   for (const id of ['windows8srv-64', 'windows9-64', 'winNetStandardGuest', 'WINDOWS10-64']) {
