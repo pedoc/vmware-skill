@@ -125,18 +125,95 @@ function vmcliPath() {
 
 /* --------------------------------------------------------- process runner */
 
+const DEFAULT_TIMEOUT_MS = 120000;
+/** File transfers are slow and legitimately long; a 2-minute cap is nonsense there. */
+const TRANSFER_TIMEOUT_MS = 3600 * 1000;
+
+/** --timeout <seconds> from the command line; null means "not given". 0 = no limit. */
+let cliTimeoutMs = null;
+
+function parseTimeout(v) {
+  const n = Number(String(v).trim());
+  if (!isFinite(n) || n < 0) fail('--timeout expects a number of seconds (0 = no limit), got: ' + v);
+  return n === 0 ? 0 : Math.round(n * 1000);
+}
+
+/**
+ * Pull `--timeout N` / `--timeout=N` out of argv before dispatch.
+ *
+ * A guest command may legitimately contain the literal string `--timeout`
+ * (e.g. `guest exec vm slowtool --timeout 5`). Everything after `--` is left
+ * alone, so write `guest exec vm -- slowtool --timeout 5` in that case.
+ */
+function extractTimeout(argv) {
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') {
+      rest.push.apply(rest, argv.slice(i));
+      break;
+    }
+    if (a === '--timeout') {
+      if (i + 1 >= argv.length) fail('--timeout needs a value in seconds (0 = no limit).');
+      cliTimeoutMs = parseTimeout(argv[++i]);
+      continue;
+    }
+    if (a.indexOf('--timeout=') === 0) {
+      cliTimeoutMs = parseTimeout(a.slice('--timeout='.length));
+      continue;
+    }
+    rest.push(a);
+  }
+  return rest;
+}
+
+/** Flags whose next argv element is a secret, masked in any printed command line. */
+const SECRET_FLAGS = new Set(['-gp', '-p', '--password', '--gp']);
+
+/**
+ * Render an argv for humans without leaking guest credentials.
+ *
+ * Error messages end up in terminals, CI logs and agent transcripts; the whole
+ * point of taking credentials from env vars was to keep them out of those.
+ */
+function redact(args) {
+  const shown = [];
+  for (let i = 0; i < args.length; i++) {
+    shown.push(args[i]);
+    if (SECRET_FLAGS.has(args[i]) && i + 1 < args.length) {
+      shown.push('***');
+      i++;
+    }
+  }
+  return shown.join(' ');
+}
+
+function effectiveTimeout(opts) {
+  if (opts && opts.timeout !== undefined && opts.timeout !== null) return opts.timeout;
+  if (cliTimeoutMs !== null) return cliTimeoutMs;
+  return DEFAULT_TIMEOUT_MS;
+}
+
+function transferTimeout() {
+  return cliTimeoutMs !== null ? cliTimeoutMs : TRANSFER_TIMEOUT_MS;
+}
+
 function run(exe, args, opts) {
   opts = opts || {};
+  const timeout = effectiveTimeout(opts);
   const res = spawnSync(exe, args, {
     windowsHide: true,
-    timeout: opts.timeout || 120000,
+    timeout: timeout,
     maxBuffer: 64 * 1024 * 1024,
     cwd: opts.cwd,
     env: process.env,
   });
   if (res.error) {
     if (res.error.code === 'ENOENT') fail('Executable not found: ' + exe);
-    if (res.error.code === 'ETIMEDOUT') fail('Timed out after ' + (opts.timeout || 120000) + 'ms: ' + exe + ' ' + args.join(' '));
+    if (res.error.code === 'ETIMEDOUT') {
+      fail('Timed out after ' + timeout + 'ms: ' + exe + ' ' + redact(args) +
+        '\nRaise it with --timeout <seconds> (0 = no limit), or check that the guest is responsive.');
+    }
     fail('Failed to run ' + exe + ': ' + res.error.message);
   }
   return {
@@ -388,6 +465,31 @@ function vmrunGuest(args) {
   return vmrun(['-gu', c.user, '-gp', c.pass].concat(args));
 }
 
+/**
+ * Guest call that returns the raw result instead of exiting.
+ *
+ * Some guest queries encode their answer in the exit code (`fileExistsInGuest`
+ * returns 127 for "does not exist"), so they must not go through runOrDie.
+ */
+function vmrunGuestRaw(args, opts) {
+  const c = guestCreds();
+  return run(vmrunPath(), ['-T', 'ws', '-gu', c.user, '-gp', c.pass].concat(args), opts);
+}
+
+/** Strip the `See 'vmcli.exe ... --help'.` trailer VMware appends to every error. */
+function guestError(r) {
+  const text = (((r && r.out) || '') + '\n' + ((r && r.err) || ''))
+    .replace(/\s*See '[^']*'\.?\s*/gi, ' ')
+    .trim();
+  return text || ('Guest operation failed (exit code ' + (r && r.code) + ')');
+}
+
+/** Turn a failed raw guest call into an exception, keeping the real message. */
+function guestOrDie(r, what) {
+  if (r.code === 0) return ((r.out || '').trim());
+  fail(guestError(r) + (what ? '\n(while ' + what + ')' : ''));
+}
+
 function vmcliGuest(vmx, module, command, args) {
   const c = guestCreds();
   return vmcli(vmx, module, command, ['-u', c.user, '-p', c.pass].concat(args || []));
@@ -498,19 +600,23 @@ const HELP = {
       '   snapshot revert <vm> <name|uid>\n' +
       '   snapshot delete <vm> <name|uid> [--children]\n' +
       '   snapshot clone <vm> <name|uid> <dest.vmx> [--linked]',
-  guest: 'guest ls <vm> <path>            list a directory in the guest\n' +
+  guest: 'guest ls <vm> <path> [--long]  list a directory (names; --long = raw detail table)\n' +
       '   guest mkdir <vm> <path>          create a directory\n' +
       '   guest rmdir <vm> <path>          delete a directory\n' +
       '   guest rm <vm> <path>             delete a file\n' +
       '   guest mv <vm> <from> <to>        move/rename\n' +
-      '   guest copy-to <vm> <hostPath> <guestPath> [--overwrite]\n' +
-      '   guest copy-from <vm> <guestPath> <hostPath> [--overwrite]\n' +
-      '   guest run <vm> <program> [args...]   run a program (waits unless --no-wait)\n' +
+      '   guest copy-to <vm> <hostPath> <guestPath>      copy one file in\n' +
+      '   guest copy-from <vm> <guestPath> <hostPath>    copy one file out\n' +
+      '   guest put-dir <vm> <hostDir> <guestDir>        copy a tree in\n' +
+      '   guest get-dir <vm> <guestDir> <hostDir>        copy a tree out\n' +
+      '   guest exec <vm> <command...>     run and CAPTURE stdout+stderr+exit code\n' +
+      '   guest run <vm> <program> [args...]   fire-and-forget (no output captured)\n' +
       '   guest script <vm> <interpreter> <script>   run a script\n' +
       '   guest ps <vm>                   list guest processes\n' +
       '   guest kill <vm> <pid>           kill a guest process\n' +
-      '   guest exists <vm> <path>        does a file exist?\n' +
-      '   guest dir-exists <vm> <path>    does a directory exist?\n' +
+      '   guest exists <vm> <path>        print true/false, exit 0 either way\n' +
+      '   guest dir-exists <vm> <path>    same, for a directory\n' +
+      '   guest ready <vm>                wait until guest ops actually work\n' +
       '   guest temp <vm>                 create a temp file in the guest\n' +
       '   guest env <vm>                  dump guest environment variables',
   shared: 'shared list <vm>          list shared folders\n' +
@@ -519,9 +625,9 @@ const HELP = {
       '   shared set <vm> <name> <hostPath> [--readonly]\n' +
       '   shared enable <vm> | shared disable <vm>',
   chipset: 'chipset query <vm>       cpu / memory / cores-per-socket\n' +
-      '   chipset cpu <vm> <n>         set vCPU count\n' +
-      '   chipset memory <vm> <mb>     set memory size (MB)\n' +
-      '   chipset cores <vm> <n>       set cores per socket',
+      '   chipset cpu <vm> <n>         set vCPU count   (VM must be powered off)\n' +
+      '   chipset memory <vm> <mb>     set memory (MB)  (VM must be powered off)\n' +
+      '   chipset cores <vm> <n>       set cores/socket (VM must be powered off)',
   config: 'config get <vm> [key]      read .vmx config params (ConfigParams)\n' +
       '   config set <vm> <key> <value> write one config param',
   disk: 'disk list <vm>            disks / cdroms\n' +
@@ -723,6 +829,206 @@ function cmdSnapshot(args) {
   }
 }
 
+/* ------------------------------------------------------------ guest utils */
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Guest OS family, from the .vmx `guestOS` value.
+ *
+ * Used to pick a shell and a path separator. Anything unrecognised is treated
+ * as POSIX — that is the safer default when the guest is not Windows.
+ */
+function osFamilyOf(guestOs) {
+  const g = String(guestOs || '').toLowerCase();
+  return /^win|windows/.test(g) ? 'windows' : 'linux';
+}
+
+function guestOsFamily(vm) {
+  try {
+    const q = parseOrRaw(vmcli(vm.vmx, 'ConfigParams', 'query'));
+    if (q && typeof q === 'object' && q.guestOS) return osFamilyOf(q.guestOS);
+  } catch (e) { /* fall through */ }
+  return 'linux';
+}
+
+function guestFamilyInfo(vm) {
+  const windows = guestOsFamily(vm) === 'windows';
+  return { windows: windows, sep: windows ? '\\' : '/' };
+}
+
+function guestJoin(family, base, name) {
+  const sep = family === 'windows' ? '\\' : '/';
+  const trimmed = String(name).split('/').join(sep);
+  return String(base).replace(/[\\/]+$/, '') + sep + trimmed;
+}
+
+/** true / false; throws only when the guest itself is unusable. */
+function guestPathExists(vm, guestPath, kind) {
+  const cmd = kind === 'dir' ? 'directoryExistsInGuest' : 'fileExistsInGuest';
+  const r = vmrunGuestRaw([cmd, vm.vmx, guestPath]);
+  const text = ((r.out || '') + '\n' + (r.err || '')).trim();
+  // The "does not exist" wording is a normal answer, not an error.
+  if (/does not exist/i.test(text)) return false;
+  if (/\bexists\b/i.test(text) && !/^error/im.test(text)) return true;
+  fail(guestError(r) + '\n(while checking ' + guestPath + ')');
+}
+
+/** Same, but answers false instead of throwing. Used for probes. */
+function guestPathExistsQuiet(vm, guestPath, kind) {
+  try {
+    return guestPathExists(vm, guestPath, kind);
+  } catch (e) {
+    return false;
+  }
+}
+
+function ensureGuestDir(vm, guestPath) {
+  const r = vmrunGuestRaw(['createDirectoryInGuest', vm.vmx, guestPath]);
+  if (r.code === 0) return;
+  const msg = guestError(r);
+  if (/already exists/i.test(msg)) return;
+  fail(msg + '\n(while creating ' + guestPath + ')');
+}
+
+/** Copy one file; vmrun overwrites the destination silently. */
+function guestCopyTo(vm, hostPath, guestPath) {
+  const r = vmrunGuestRaw(['copyFileFromHostToGuest', vm.vmx, hostPath, guestPath], { timeout: transferTimeout() });
+  if (r.code !== 0) fail(guestError(r) + '\n(while copying ' + hostPath + ' -> ' + guestPath + ')');
+}
+
+function guestCopyFrom(vm, guestPath, hostPath) {
+  const r = vmrunGuestRaw(['copyFileFromGuestToHost', vm.vmx, guestPath, hostPath], { timeout: transferTimeout() });
+  if (r.code !== 0) fail(guestError(r) + '\n(while copying ' + guestPath + ' -> ' + hostPath + ')');
+}
+
+function guestListNames(vm, guestPath) {
+  const r = vmrunGuestRaw(['listDirectoryInGuest', vm.vmx, guestPath]);
+  if (r.code !== 0) fail(guestError(r) + '\n(while listing ' + guestPath + ')');
+  return String(r.out || '')
+    .split(/\r?\n/)
+    .slice(1) // drop the "Directory list: N" header
+    .map((s) => s.trim())
+    .filter((s) => s && s !== '.' && s !== '..');
+}
+
+function walkLocalDir(root) {
+  const entries = [];
+  const stack = [''];
+  while (stack.length) {
+    const rel = stack.pop();
+    const abs = rel ? path.join(root, rel) : root;
+    let list;
+    try {
+      list = fs.readdirSync(abs, { withFileTypes: true });
+    } catch (e) {
+      fail('Cannot read host directory ' + abs + ': ' + e.message);
+    }
+    for (const ent of list) {
+      const childRel = rel ? rel + '/' + ent.name : ent.name;
+      if (ent.isDirectory()) {
+        entries.push({ rel: childRel, dir: true });
+        stack.push(childRel);
+      } else if (ent.isFile()) {
+        entries.push({ rel: childRel, dir: false });
+      }
+    }
+  }
+  return entries;
+}
+
+/**
+ * Run a command in the guest and bring back its stdout/stderr/exit code.
+ *
+ * vmrun cannot capture output, so the command is redirected to a temp file in
+ * the guest and copied back.
+ *
+ * The command is shipped as a script file invoked by a single space-free token
+ * (`cmd /c C:\Windows\Temp\x.bat`). Passing the command inline does not work:
+ * vmrun re-quotes any argument containing spaces, cmd.exe then strips only one
+ * of the resulting quotes, and the last character of the command leaks into the
+ * output as a stray `"`. A file sidesteps quoting entirely.
+ */
+function guestExecCapture(vm, cmdline) {
+  const family = guestFamilyInfo(vm);
+  const stamp = process.pid + '-' + Date.now();
+  const ext = family.windows ? '.bat' : '.sh';
+
+  const remoteDir = family.windows ? 'C:\\Windows\\Temp' : '/tmp';
+  const remoteScript = remoteDir + family.sep + 'vws-exec-' + stamp + ext;
+  const remoteLog = remoteDir + family.sep + 'vws-exec-' + stamp + '.log';
+  const hostScript = path.join(os.tmpdir(), 'vws-exec-' + stamp + ext);
+  const hostLog = path.join(os.tmpdir(), 'vws-exec-' + stamp + '.log');
+
+  // The whole command goes inside a subshell so the redirect covers every
+  // segment. Appending `> log 2>&1` directly would bind to the last command of
+  // a `a && b` / `a | b` chain and silently drop the rest of the output.
+  const body = family.windows
+    ? '@echo off\r\n(\r\n' + cmdline + '\r\n) > ' + remoteLog + ' 2>&1\r\n'
+    : '#!/bin/sh\n(\n' + cmdline + '\n) > ' + remoteLog + ' 2>&1\n';
+
+  fs.writeFileSync(hostScript, body, 'utf8');
+  guestCopyTo(vm, hostScript, remoteScript);
+
+  let r;
+  try {
+    r = family.windows
+      ? vmrunGuestRaw(['runProgramInGuest', vm.vmx, 'C:\\Windows\\System32\\cmd.exe', '/c ' + remoteScript])
+      : vmrunGuestRaw(['runProgramInGuest', vm.vmx, '/bin/sh', remoteScript]);
+  } finally {
+    try { fs.unlinkSync(hostScript); } catch (e) { /* ignore */ }
+  }
+
+  let output = '';
+  if (guestPathExistsQuiet(vm, remoteLog)) {
+    try {
+      guestCopyFrom(vm, remoteLog, hostLog);
+      output = decodeText(fs.readFileSync(hostLog));
+    } catch (e) {
+      output = '[could not read guest output: ' + e.message + ']';
+    }
+    try { fs.unlinkSync(hostLog); } catch (e) { /* ignore */ }
+    vmrunGuestRaw(['deleteFileInGuest', vm.vmx, remoteLog]);
+  }
+  vmrunGuestRaw(['deleteFileInGuest', vm.vmx, remoteScript]);
+
+  const m = /non-zero exit code:\s*(-?\d+)/i.exec(guestError(r));
+  const code = m ? Number(m[1]) : (r.code === 0 ? 0 : r.code);
+  // A guest command that merely exits non-zero is not a wrapper failure, but a
+  // command that never ran is.
+  if (!output && code !== 0 && r.code !== 0 && !m) fail(guestError(r));
+  return { output: output, code: code };
+}
+
+/**
+ * Wait until guest operations actually work.
+ *
+ * checkToolsState can say "running" while every guest call still times out —
+ * a wedged guest channel looks exactly like a healthy one. Only a real round
+ * trip proves the channel is usable.
+ */
+function guestReady(vm, budgetMs) {
+  const started = Date.now();
+  const limit = budgetMs > 0 ? budgetMs : 180000;
+  let tools = 'unknown';
+  while (Date.now() - started < limit) {
+    const r = run(vmrunPath(), ['-T', 'ws', 'checkToolsState', vm.vmx], { timeout: 60000 });
+    tools = ((r.out || '') + (r.err || '')).trim();
+    if (/^running/i.test(tools)) break;
+    sleepMs(2000);
+  }
+  const running = /^running/i.test(tools);
+  const family = guestOsFamily(vm);
+  const probe = running && guestPathExistsQuiet(vm, family === 'windows' ? 'C:\\' : '/', 'dir');
+  return {
+    tools: running ? 'running' : (tools || 'unknown'),
+    ready: Boolean(probe),
+    elapsedMs: Date.now() - started,
+  };
+}
+
 function cmdGuest(args) {
   const { flags, pos } = splitArgs(args);
   const sub = pos[0];
@@ -731,20 +1037,36 @@ function cmdGuest(args) {
     case 'ls': {
       const p = pos[2];
       if (!p) fail('guest ls needs a path.');
-      const q = parseOrRaw(vmcliGuest(vm.vmx, 'Guest', 'ls', [p]));
-      out(JSON.stringify(q, null, 2));
+      if (flags.long) {
+        // Keep the detailed table available, but as an explicit opt-in.
+        out(parseOrRaw(vmcliGuest(vm.vmx, 'Guest', 'ls', [p])));
+      } else {
+        out(JSON.stringify(guestListNames(vm, p), null, 2));
+      }
       return;
     }
     case 'mkdir':
-      vmcliGuest(vm.vmx, 'Guest', 'mkdir', [pos[2]]);
+      ensureGuestDir(vm, pos[2]);
       out('created ' + pos[2]);
       return;
     case 'rmdir':
-      vmcliGuest(vm.vmx, 'Guest', 'rmdir', pos[3] ? [pos[2], '-r'] : [pos[2]]);
+      if (!pos[2]) fail('guest rmdir needs a path.');
+      // On Windows vmrun's deleteDirectoryInGuest already removes the contents;
+      // on Linux it refuses a non-empty directory, so --recursive is the only
+      // reliable way to express "delete the whole tree" across both.
+      if (flags.recursive) {
+        vmcliGuest(vm.vmx, 'Guest', 'rmdir', [pos[2], '-r']);
+      } else {
+        const r = vmrunGuestRaw(['deleteDirectoryInGuest', vm.vmx, pos[2]]);
+        if (r.code !== 0) {
+          fail(guestError(r) + '\n(while removing ' + pos[2] + ')' +
+            '\nIf the directory is not empty, add --recursive.');
+        }
+      }
       out('removed dir ' + pos[2]);
       return;
     case 'rm':
-      vmcliGuest(vm.vmx, 'Guest', 'rm', [pos[2]]);
+      guestOrDie(vmrunGuestRaw(['deleteFileInGuest', vm.vmx, pos[2]]), 'deleting ' + pos[2]);
       out('removed ' + pos[2]);
       return;
     case 'mv': {
@@ -754,18 +1076,81 @@ function cmdGuest(args) {
       out('moved ' + pos[2] + ' -> ' + pos[3]);
       return;
     }
-    case 'copy-to': {
-      const a = [pos[2], pos[3]];
-      if (flags.overwrite) a.push('-o');
-      vmcliGuest(vm.vmx, 'Guest', 'copyTo', a);
+    case 'copy-to':
+      if (!pos[2] || !pos[3]) fail('guest copy-to needs <hostPath> and <guestPath>.');
+      guestCopyTo(vm, pos[2], pos[3]);
       out('copied ' + pos[2] + ' -> ' + pos[3]);
       return;
-    }
-    case 'copy-from': {
-      const a = [pos[2], pos[3]];
-      if (flags.overwrite) a.push('-o');
-      vmcliGuest(vm.vmx, 'Guest', 'copyFrom', a);
+    case 'copy-from':
+      if (!pos[2] || !pos[3]) fail('guest copy-from needs <guestPath> and <hostPath>.');
+      guestCopyFrom(vm, pos[2], pos[3]);
       out('copied ' + pos[2] + ' -> ' + pos[3]);
+      return;
+    case 'put-dir': {
+      const hostDir = pos[2];
+      const guestDir = pos[3];
+      if (!hostDir || !guestDir) fail('guest put-dir needs <hostDir> and <guestDir>.');
+      if (!fs.existsSync(hostDir) || !fs.statSync(hostDir).isDirectory()) {
+        fail('Not a directory on the host: ' + hostDir);
+      }
+      const family = guestOsFamily(vm);
+      const entries = walkLocalDir(hostDir);
+      if (!entries.length) fail('Nothing to copy: ' + hostDir + ' is empty.');
+      ensureGuestDir(vm, guestDir);
+      let dirs = 1;
+      let files = 0;
+      for (const e of entries) {
+        const target = guestJoin(family, guestDir, e.rel);
+        if (e.dir) {
+          ensureGuestDir(vm, target);
+          dirs++;
+        } else {
+          guestCopyTo(vm, path.join(hostDir, e.rel), target);
+          files++;
+          process.stderr.write('  ' + e.rel + '\n');
+        }
+      }
+      out(JSON.stringify({ guestDir: guestDir, dirs: dirs, files: files }, null, 2));
+      return;
+    }
+    case 'get-dir': {
+      const guestDir = pos[2];
+      const hostDir = pos[3];
+      if (!guestDir || !hostDir) fail('guest get-dir needs <guestDir> and <hostDir>.');
+      const family = guestOsFamily(vm);
+      const sep = family === 'windows' ? '\\' : '/';
+      fs.mkdirSync(hostDir, { recursive: true });
+      let dirs = 1;
+      let files = 0;
+      const walk = (guestPath, hostPath, depth) => {
+        if (depth > 24) fail('Directory tree too deep under ' + guestPath + ' (loop?)');
+        for (const name of guestListNames(vm, guestPath)) {
+          const g = guestPath.replace(/[\\/]+$/, '') + sep + name;
+          const h = path.join(hostPath, name);
+          if (guestPathExistsQuiet(vm, g, 'dir')) {
+            fs.mkdirSync(h, { recursive: true });
+            dirs++;
+            walk(g, h, depth + 1);
+          } else {
+            guestCopyFrom(vm, g, h);
+            files++;
+            process.stderr.write('  ' + name + '\n');
+          }
+        }
+      };
+      walk(guestDir, hostDir, 0);
+      out(JSON.stringify({ hostDir: hostDir, dirs: dirs, files: files }, null, 2));
+      return;
+    }
+    case 'exec': {
+      const cmdline = pos.slice(2).join(' ');
+      if (!cmdline) fail('guest exec needs a command, e.g. guest exec <vm> dir C:\\\\');
+      const res = guestExecCapture(vm, cmdline);
+      if (res.output) process.stdout.write(res.output.replace(/\s+$/, '') + '\n');
+      if (res.code !== 0) {
+        process.stderr.write('[guest exit code ' + res.code + ']\n');
+        process.exitCode = res.code;
+      }
       return;
     }
     case 'run': {
@@ -791,6 +1176,14 @@ function cmdGuest(args) {
       out(r || 'OK');
       return;
     }
+    case 'ready': {
+      const res = guestReady(vm, cliTimeoutMs);
+      out(JSON.stringify(res, null, 2));
+      if (!res.ready) {
+        process.exitCode = 1;
+      }
+      return;
+    }
     case 'ps': {
       const q = parseOrRaw(vmcliGuest(vm.vmx, 'Guest', 'ps', []));
       out(JSON.stringify(q, null, 2));
@@ -800,14 +1193,11 @@ function cmdGuest(args) {
       vmcliGuest(vm.vmx, 'Guest', 'kill', [String(pos[2])]);
       out('killed pid ' + pos[2]);
       return;
-    case 'exists': {
-      const r = vmrunGuest(['fileExistsInGuest', vm.vmx, pos[2]]);
-      out(String(r).trim() || 'false');
-      return;
-    }
+    case 'exists':
     case 'dir-exists': {
-      const r = vmrunGuest(['directoryExistsInGuest', vm.vmx, pos[2]]);
-      out(String(r).trim() || 'false');
+      if (!pos[2]) fail('guest ' + sub + ' needs a path.');
+      // A query, not an assertion: an absent path is a normal answer, not an error.
+      out(guestPathExists(vm, pos[2], sub === 'dir-exists' ? 'dir' : 'file') ? 'true' : 'false');
       return;
     }
     case 'temp': {
@@ -860,6 +1250,24 @@ function cmdShared(args) {
   }
 }
 
+/**
+ * Chipset setters go through the hot-plug path, which only works while the VM
+ * is powered off. A running VM answers "Not currently processing an active
+ * hot-plug batch", which says nothing about the actual cause.
+ */
+function requirePoweredOff(vm, action) {
+  let state = null;
+  try {
+    const q = parseOrRaw(vmcli(vm.vmx, 'Power', 'query'));
+    state = q && q.PowerState ? String(q.PowerState).toLowerCase() : null;
+  } catch (e) { /* unknown state: let the CLI decide */ }
+  if (state && state !== 'off') {
+    fail('Cannot ' + action + ' while the VM is ' + state + '.\n' +
+      'Power it off first:  node vmware.js power stop "' + vm.name + '"\n' +
+      '(To edit the .vmx for the next boot instead: config set ' + vm.name + ' memsize <MB>)');
+  }
+}
+
 function cmdChipset(args) {
   const { flags, pos } = splitArgs(args);
   const sub = pos[0];
@@ -871,14 +1279,17 @@ function cmdChipset(args) {
       return;
     }
     case 'cpu':
+      requirePoweredOff(vm, 'change the vCPU count');
       vmcli(vm.vmx, 'Chipset', 'SetVCpuCount', [String(pos[2])]);
       out('vcpu count set to ' + pos[2]);
       return;
     case 'memory':
+      requirePoweredOff(vm, 'change memory size');
       vmcli(vm.vmx, 'Chipset', 'SetMemSize', [String(pos[2])]);
       out('memory set to ' + pos[2] + ' MB');
       return;
     case 'cores':
+      requirePoweredOff(vm, 'change cores per socket');
       vmcli(vm.vmx, 'Chipset', 'SetCoresPerSocket', [String(pos[2])]);
       out('cores per socket set to ' + pos[2]);
       return;
@@ -1307,6 +1718,7 @@ function help(topic) {
 }
 
 function main(argv) {
+  argv = extractTimeout(argv);
   const g = argv[0];
   if (!g || g === 'help' || g === '--help' || g === '-h') {
     help(argv[1]);
@@ -1321,9 +1733,29 @@ function main(argv) {
   fn(argv.slice(1));
 }
 
-try {
-  main(process.argv.slice(2));
-} catch (e) {
-  process.stderr.write((e && e.message ? e.message : String(e)) + '\n');
-  process.exit(e && e.vmExit ? e.vmExit : 1);
+// Only run when invoked directly. `require()` from selftest.js must not execute
+// a command, and the unit test needs the helpers below.
+if (require.main === module) {
+  try {
+    main(process.argv.slice(2));
+  } catch (e) {
+    process.stderr.write((e && e.message ? e.message : String(e)) + '\n');
+    process.exit(e && e.vmExit ? e.vmExit : 1);
+  }
 }
+
+module.exports = {
+  main: main,
+  redact: redact,
+  extractTimeout: extractTimeout,
+  parseYaml: parseYaml,
+  parseOrRaw: parseOrRaw,
+  yamlScalar: yamlScalar,
+  normVmx: normVmx,
+  resolveVm: resolveVm,
+  guestJoin: guestJoin,
+  osFamilyOf: osFamilyOf,
+  HELP: HELP,
+  get cliTimeoutMs() { return cliTimeoutMs; },
+  resetCliTimeout: function () { cliTimeoutMs = null; },
+};

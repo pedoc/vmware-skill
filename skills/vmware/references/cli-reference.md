@@ -55,16 +55,16 @@ vmrun -T ws [-gu <guestUser>] [-gp <guestPass>] <command> [params]
 | `runScriptInGuest` | `<vmx> [-noWait] [-activeWindow] [-interactive] <interpreter> <script>` |
 | `listProcessesInGuest` | `<vmx>` |
 | `killProcessInGuest` | `<vmx> <pid>` |
-| `fileExistsInGuest` | `<vmx> <guestPath>` |
-| `directoryExistsInGuest` | `<vmx> <guestPath>` |
-| `listDirectoryInGuest` | `<vmx> <guestPath>` |
+| `fileExistsInGuest` | `<vmx> <guestPath>` ← **不存在时退出码 127，不是布尔** |
+| `directoryExistsInGuest` | `<vmx> <guestPath>` ← 同上 |
+| `listDirectoryInGuest` | `<vmx> <guestPath>` ← 输出 `Directory list: N` + 每行一个名字 |
 | `createDirectoryInGuest` | `<vmx> <guestPath>` |
 | `deleteDirectoryInGuest` | `<vmx> <guestPath>` |
 | `deleteFileInGuest` | `<vmx> <guestPath>` |
 | `renameFileInGuest` | `<vmx> <old> <new>` |
-| `CopyFileFromHostToGuest` | `<vmx> <hostPath> <guestPath>` |
-| `CopyFileFromGuestToHost` | `<vmx> <guestPath> <hostPath>` |
-| `CreateTempfileInGuest` | `<vmx>` |
+| `copyFileFromHostToGuest` | `<vmx> <hostPath> <guestPath>` ← 无大小限制，已存在则覆盖 |
+| `copyFileFromGuestToHost` | `<vmx> <guestPath> <hostPath>` ← 同上 |
+| `createTempfileInGuest` | `<vmx>` |
 | `typeKeystrokesInGuest` | `<vmx> <keystrokes>` |
 | `captureScreen` | `<vmx> <hostPath>` ← **需要客户机登录** |
 | `connectNamedDevice` | `<vmx> <device>` |
@@ -132,6 +132,12 @@ vmcli.exe [<vmx location>] <Module> <Command> [<args>]
 `mv <from> <to> [-o]` / `copyTo <from> <to> [-o]` / `copyFrom <from> <to> [-o]` /
 `run <program> [programArgs] [-nw] [-aw] [-i] [-w <dir>] [-e <env>]` / `ps [-pid <pid>] [-f <0|1|2>]` /
 `kill <pid>` / `env` / `createTempFile <prefix> <suffix> <dir>` / `createTempDir` / `query` / `toolsproperties`
+
+> ⚠️ `copyTo` / `copyFrom` **只能传 64KB 以内的文件**。64KB 报 `Unknown error`，再大报
+> `VMware Tools are not running in the guest`（假消息）。连续失败几次还会卡死客户机通道，
+> 之后所有 guest 操作超时，**只能重启 VM 恢复**。
+> 文件传输一律用 vmrun 的 `copyFileFromHostToGuest` / `copyFileFromGuestToHost`。
+> 本机实测：100MB 单文件 28 秒；vmrun 支持任意大小，vmcli 只到 64KB。
 
 **MKS** — `query` / `captureScreenshot <filename>` / `sendKeySequence <sequence>` / `sendKeyEvent` /
 `SetGuestResolution <w> <h>` / `SetNumDisplays <n>` / `SetVramSize <n>` / `SetGraphicsMemoryKB <n>` /

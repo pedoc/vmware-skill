@@ -29,6 +29,28 @@ node scripts/vmware.js power status "K:/VirtualMachines/Win10/Windows 10 x64.vmx
 
 名字解析走 VMware 自己的 `inventory.vmls`，**不需要 vmrest**。
 
+**超时**（任何命令都适用）：默认 120 秒，文件传输默认 1 小时。
+
+```sh
+node scripts/vmware.js snapshot revert "Windows Server 2012" "系统安装完成" --timeout 600
+node scripts/vmware.js guest exec "Ubuntu 22 x64" "make -j4" --timeout 0     # 0 = 不限时
+```
+
+客户机命令里若真的要出现字面量 `--timeout`，用 `--` 隔开：`guest exec vm -- slowtool --timeout 5`。
+
+## Windows 上先设 MSYS_NO_PATHCONV=1
+
+在 **Git Bash / MSYS2** 里跑（这是 Claude Code 在 Windows 上的默认 shell），MSYS 会把 `/c`、`/tmp` 这类参数改写成 `C:/`、`C:\Program Files\Git\tmp`：
+
+```sh
+export MSYS_NO_PATHCONV=1
+node scripts/vmware.js guest exec "Win10" "dir C:\\"
+```
+
+不设的后果很隐蔽：命令被改写成 `C:/ echo ...`，`cmd` 报一个看不懂的错，或者干脆挂到超时。主机路径再交给客户机时用 `cygpath -w` 转成 `C:\...` 形式。
+
+PowerShell / cmd 里没有这个问题，只是别用单引号包 Windows 路径。
+
 ## 三层能力，怎么选
 
 | 层 | 工具 | 覆盖范围 | 前置条件 |
@@ -46,7 +68,7 @@ node scripts/vmware.js power status "K:/VirtualMachines/Win10/Windows 10 x64.vmx
 | `vm` | `list` 列表 / `info` 全量配置 / `running` 运行中 |
 | `power` | `status` `start` `stop` `reset` `suspend` `pause` `unpause` |
 | `snapshot` | `list` `take` `revert` `delete` `clone`（**按名字操作**，自动查 uid） |
-| `guest` | 客户机内 `ls` `mkdir` `rm` `mv` `copy-to` `copy-from` `run` `script` `ps` `kill` `exists` `env` |
+| `guest` | 客户机内 `ls` `mkdir` `rm` `mv` `copy-to` `copy-from` `put-dir` `get-dir` `exec` `run` `script` `ps` `kill` `exists` `dir-exists` `ready` `env` |
 | `shared` | 共享文件夹 `list` `add` `remove` `set` `enable` `disable` |
 | `chipset` | `query` `cpu` `memory` `cores` |
 | `config` | 读写 `.vmx` 配置项 `get` `set` |
@@ -77,6 +99,44 @@ node scripts/vmware.js guest ps "Ubuntu 22 x64"
 没设就直接报错退出，不会瞎猜。凭据需要客户机里装了并运行 VMware Tools。
 
 **例外**：`screen capture` 走 `vmcli MKS`，不需要密码。
+
+口令不会出现在任何输出的命令行里（超时报错会把 `-gp` 后面的值打成 `***`）。
+
+## 客户机文件与命令
+
+| 想做的事 | 命令 |
+|---|---|
+| 传单个文件进去 / 拿出来 | `guest copy-to` / `guest copy-from` |
+| 传整个目录树 | `guest put-dir` / `guest get-dir` |
+| **拿命令输出** | `guest exec` |
+| 只把程序拉起来，不等结果 | `guest run` / `guest script` |
+| 判断路径在不在 | `guest exists` / `guest dir-exists` |
+
+**`guest exec` 是跑命令的默认选择**——它把 stdout+stderr 带回来，并把客户机的退出码变成脚本的退出码：
+
+```sh
+node scripts/vmware.js guest exec "Win10" "dir C:\\Windows"
+node scripts/vmware.js guest exec "Ubuntu 22 x64" "systemctl is-active nginx"   # 退出码原样透传
+```
+
+实现上会在客户机的 `C:\Windows\Temp`（Linux 为 `/tmp`）落一个临时脚本和日志，跑完删除。所以**命令里可以自由使用 `>` `|` `&&` 和引号**——它被当成脚本执行，不经过任何一层的引号重写。
+
+`guest run` / `guest script` 是 vmrun 的直通，**不返回输出**，只适合交互式程序或已经自己写日志的进程。
+
+**`exists` 是查询不是断言**：路径不存在打印 `false` 并正常退出 0，只有客户机本身不可用才报错。
+
+```sh
+if [ "$(node scripts/vmware.js guest exists "Win10" 'C:\setup.exe')" = "true" ]; then ...; fi
+```
+
+**`guest ready` 用来等客户机真正可用**：
+
+```sh
+node scripts/vmware.js guest ready "Win10" --timeout 300
+# { "tools": "running", "ready": true, "elapsedMs": 41250 }
+```
+
+必须等 `ready: true`，不能只看 `tools status`。Tools 报 `running` 但客户机通道卡死时，所有 guest 操作都会静默超时——`ready` 会做一次真实往返探测，正好能识别这种状态。
 
 ## REST API（可选）
 
@@ -113,6 +173,8 @@ REST 用自己的 VM id（哈希串），但 `rest` 子命令**接受 VM 名字*
 - **`power stop --hard` 等于拔电源**，客户机可能丢数据；默认是 `soft`。
 - **`power start` 默认开 GUI**（`--nogui` 后台跑）。
 - 客户机操作超时是正常的（等 Tools 握手），失败会返回 VMware 原始错误。
+- **改 CPU/内存必须关机**：`chipset cpu|memory|cores` 走热插拔通道，开机的 VM 会直接报错。
+  想为下次启动改配置用 `config set <vm> memsize <MB>`。
 
 ## 已知坑（照着 README 走会踩）
 
@@ -131,6 +193,17 @@ REST 用自己的 VM id（哈希串），但 `rest` 子命令**接受 VM 名字*
    报 `Invalid argument: '...' is not a boolean`）。`vmcli HGFS query` 只能读。
 8. **`shared remove` 之后 `.vmx` 会残留 `sharedFolder0.*` 文本**——`sharedFolder.maxNum = "0"` 说明
    实际已无生效共享，但残留行需要手动删或重启 VMware 让它重写。
+9. **`vmcli Guest copyTo/copyFrom` 只能传 64KB 以内的文件**，超过就报 `Unknown error` 或
+   `VMware Tools are not running in the guest`（后者是假消息，Tools 好着呢）。更糟的是连续失败几次
+   会把客户机通道卡死，之后**所有** guest 操作都超时，只有重启 VM 能恢复。
+   本 skill 的文件传输因此全部走 `vmrun`，不要绕回去用 vmcli。
+10. **`vmrun` 会给含空格的参数重新加引号**，`cmd.exe` 又只剥掉其中一个，结果命令末尾会多出一个
+   `"`。所以 `guest exec` 把命令写成脚本文件再执行，不内联传参。
+11. **`runProgramInGuest` 的 `-interactive` 在 Windows 客户机上经常失败**：报
+   `The specified guest user does not match the user currently logged in interactively`。
+   Administrator 已交互登录时不要加这个 flag。
+12. **客户机通道卡死时，`tools status` 仍然报 running。** 判断能否操作要用 `guest ready`
+   （会做一次真实往返），不要用 `tools status`。真卡死了只能 `power stop --hard` 再起来。
 
 ## 深入
 

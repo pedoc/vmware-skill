@@ -32,6 +32,6 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --check skills/vmware/scripts/vmware.js && node skills/vmware/scripts/vmware.js help"
+    "test": "node --check skills/vmware/scripts/vmware.js && node --check skills/vmware/scripts/selftest.js && node skills/vmware/scripts/selftest.js && node skills/vmware/scripts/vmware.js help"
   }
 }

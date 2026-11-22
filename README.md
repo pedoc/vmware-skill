@@ -76,7 +76,7 @@ Name resolution reads VMware's own `inventory.vmls`, so **vmrest does not need t
 | `vm` | `list` / `info` (full config dump) / `running` |
 | `power` | `status` `start` `stop` `reset` `suspend` `pause` `unpause` |
 | `snapshot` | `list` `take` `revert` `delete` `clone` — **by name**, uid auto-resolved |
-| `guest` | in-guest `ls` `mkdir` `rm` `mv` `copy-to` `copy-from` `run` `script` `ps` `kill` `exists` `env` |
+| `guest` | in-guest `ls` `mkdir` `rm` `mv` `copy-to` `copy-from` `put-dir` `get-dir` `exec` `run` `script` `ps` `kill` `exists` `dir-exists` `ready` `env` |
 | `shared` | shared folders `list` `add` `remove` `set` `enable` `disable` |
 | `chipset` | `query` `cpu` `memory` `cores` |
 | `config` | read/write `.vmx` config params |
@@ -106,6 +106,60 @@ node scripts/vmware.js guest ps "Ubuntu 22 x64"
 Requires VMware Tools installed and running in the guest.
 
 **Exception:** `screen capture` uses `vmcli MKS`, which needs no credentials.
+
+Passwords are masked as `***` in every command line this script prints, so a timeout or error
+message never leaks them into logs or transcripts.
+
+## Running work inside the guest
+
+**`guest exec` is the one you want** — it brings back stdout+stderr and propagates the guest's
+exit code:
+
+```sh
+node scripts/vmware.js guest exec "Win10" "dir C:\\Windows"
+node scripts/vmware.js guest exec "Ubuntu 22 x64" "systemctl is-active nginx"   # exit code passes through
+```
+
+The command is uploaded as a small script file and run from there, so `>`, `|`, `&&` and quoting
+all behave normally — nothing rewrites your command line.
+
+`guest run` / `guest script` are thin `vmrun` passthroughs that **do not capture output**; use
+them only for interactive programs or ones that log to a file themselves.
+
+`guest exists` / `guest dir-exists` are queries, not assertions: an absent path prints `false`
+and exits 0.
+
+`guest ready` waits until guest operations actually work. Check `ready: true` rather than
+`tools status` — a wedged guest channel still reports `running`, and only a real round trip
+tells you it's usable:
+
+```sh
+node scripts/vmware.js guest ready "Win10" --timeout 300
+```
+
+## Git Bash / MSYS2 on Windows
+
+Claude Code on Windows runs commands through Git Bash, which rewrites `/c`, `/tmp` and friends
+into `C:/...`. Set this first:
+
+```sh
+export MSYS_NO_PATHCONV=1
+```
+
+Without it, `guest exec vm "/c dir"` reaches the guest as `C:/ dir` and fails in a way that
+looks like a timeout. Convert host paths handed to the guest with `cygpath -w`.
+
+## Timeouts
+
+Every command accepts `--timeout <seconds>` (default 120s; file transfers default to 1 hour).
+`--timeout 0` disables the limit:
+
+```sh
+node scripts/vmware.js snapshot revert "Win10" "clean" --timeout 600
+node scripts/vmware.js guest exec "Ubuntu 22 x64" "make -j4" --timeout 0
+```
+
+If a guest command genuinely needs the literal string `--timeout`, separate it with `--`.
 
 ## REST API (optional)
 
@@ -144,6 +198,21 @@ These were verified against a live install, not inferred from docs:
    Use `vmrun` (`addSharedFolder` / `removeSharedFolder` / `setSharedFolderState`) instead.
 6. **Use forward slashes for `.vmx` paths** — Windows accepts both, but forward slashes avoid
    quoting problems.
+7. **`vmcli Guest copyTo/copyFrom` caps out at 64KB.** Beyond that it reports `Unknown error`,
+   or `VMware Tools are not running in the guest` — a false message, Tools is fine. Repeated
+   failures also wedge the guest channel, after which *every* guest operation times out until
+   the VM is rebooted. All file transfers here therefore go through `vmrun`, which handles
+   arbitrary sizes (100 MB in ~28 s).
+8. **`vmrun` re-quotes arguments containing spaces**, and `cmd.exe` then strips only one set of
+   quotes — trailing up to a stray `"` in your command's output. `guest exec` avoids this by
+   shipping the command as a script file instead of passing it inline.
+9. **`runProgramInGuest -interactive` often fails on Windows guests**
+   (`The specified guest user does not match the user currently logged in interactively`).
+   Don't pass `--interactive` when Administrator is already logged in interactively.
+10. **`chipset cpu|memory|cores` require a powered-off VM** — they go through the hot-plug path.
+    To change what the *next* boot uses, write the `.vmx` instead: `config set <vm> memsize <MB>`.
+11. **A wedged guest channel still reports `tools status: running`.** Use `guest ready`; if it
+    never goes true, `power stop --hard` and start again.
 
 ## Relationship to vmware-mcp
 
