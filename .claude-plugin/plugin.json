@@ -1,0 +1,14 @@
+{
+  "name": "vmware",
+  "description": "Control VMware Workstation Pro VMs via vmrun/vmcli — no MCP server needed",
+  "version": "0.1.0",
+  "author": {
+    "name": "pedoc",
+    "url": "https://github.com/pedoc"
+  },
+  "keywords": ["vmware", "workstation", "vmrun", "vmcli", "virtual-machine"],
+  "license": "MIT",
+  "homepage": "https://github.com/pedoc/claude-skills-vmware",
+  "repository": "https://github.com/pedoc/claude-skills-vmware",
+  "skills": ["./skills/vmware"]
+}

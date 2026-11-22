@@ -1,0 +1,44 @@
+{
+  "name": "vmware",
+  "version": "0.1.0",
+  "description": "Control VMware Workstation Pro VMs via vmrun/vmcli — no MCP server needed",
+  "author": {
+    "name": "pedoc"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/pedoc/claude-skills-vmware#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedoc/claude-skills-vmware.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pedoc/claude-skills-vmware/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-skill",
+    "agent-skill",
+    "vmware",
+    "workstation",
+    "vmrun",
+    "vmcli",
+    "virtual-machine",
+    "hypervisor"
+  ],
+  "bin": {
+    "vmware-skill": "skills/vmware/scripts/vmware.js"
+  },
+  "files": [
+    "skills/vmware/SKILL.md",
+    "skills/vmware/scripts/",
+    "skills/vmware/references/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --check skills/vmware/scripts/vmware.js && node skills/vmware/scripts/vmware.js help"
+  }
+}
