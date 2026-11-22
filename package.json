@@ -28,13 +28,6 @@
   "bin": {
     "claude-skill-vmware": "skills/vmware/scripts/vmware.js"
   },
-  "files": [
-    "skills/vmware/SKILL.md",
-    "skills/vmware/scripts/",
-    "skills/vmware/references/",
-    "README.md",
-    "LICENSE"
-  ],
   "engines": {
     "node": ">=18"
   },

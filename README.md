@@ -28,11 +28,20 @@ Add `-g` to install globally (user-level) rather than into the current project.
 
 ### CLI only (for scripting)
 
+Run straight from GitHub — no npm publish required:
+
 ```bash
-npx claude-skill-vmware vm list --power
-# or
-npm install -g claude-skill-vmware
-claude-skill-vmware vm list --power
+npx --allow-git=all github:pedoc/vmware-skill vm list --power
+```
+
+> `--allow-git=all` is needed because recent npm versions default `allow-git` to `none`
+> (a supply-chain hardening change). `npx github:...` is refused without it.
+
+Or clone and run directly:
+
+```bash
+git clone https://github.com/pedoc/vmware-skill.git
+node vmware-skill/skills/vmware/scripts/vmware.js vm list --power
 ```
 
 ## Requirements
@@ -159,8 +168,7 @@ cd vmware-skill
 npm test          # syntax check + smoke test
 ```
 
-Releases are published to npm automatically when a GitHub release is published
-(requires the `NPM_TOKEN` repository secret).
+CI runs on every push: syntax check, manifest validation, and a smoke test.
 
 ## License
 
